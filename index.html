@@ -409,6 +409,20 @@ function rimLight(cv, dx, dy, color, alpha) {
   o.save(); o.globalCompositeOperation = 'source-atop'; o.globalAlpha = alpha;
   o.drawImage(c, 0, 0); o.restore();
 }
+/* saturate/contrast/brightness pass — applied as the LAST step of unit/tower
+   sprite baking so small 24-30px silhouettes still pop distinctly against the
+   busy, now-textured terrain instead of reading as muddy low-contrast blobs. */
+function boostContrast(cv, sat = 1.34, con = 1.14, bri = 1.03) {
+  const { c, x } = makeCanvas(cv.width, cv.height);
+  if (typeof x.filter === 'string') {
+    x.filter = `saturate(${sat}) contrast(${con}) brightness(${bri})`;
+    x.drawImage(cv, 0, 0);
+    x.filter = 'none';
+  } else {
+    x.drawImage(cv, 0, 0);
+  }
+  return c;
+}
 /* sun light + bounce light pass */
 function lightPass(cv, sun = 0.34, bounce = 0.18, tint = null) {
   const x = cv.getContext('2d'); const h = cv.height;
@@ -445,12 +459,15 @@ function bakeTerrain(grid) {
       const macroX = fbm((px + BUMP_E) / 230 + 60, py / 230 - 35, 3) * 0.5 + 0.5;
       const macroY = fbm(px / 230 + 60, (py + BUMP_E) / 230 - 35, 3) * 0.5 + 0.5;
       const slope = (macroX - macro) * -LIGHT.x + (macroY - macro) * -LIGHT.y;
-      const bump = clamp(1 + slope * 16, 0.6, 1.5);
+      // stronger amplitude than phase-1 (16 -> 24, wider clamp) so the fake normal-
+      // map ridges/hollows dominate the read at gameplay zoom instead of leaving any
+      // residual tile-aligned regularity visible through the shading
+      const bump = clamp(1 + slope * 24, 0.55, 1.68);
       let col = mixHex(GRASS_D, GRASS_L, clamp(n * 1.25 - 0.1, 0, 1));
       col = mixHex(col, MOSS, clamp((0.6 - n) * 1.4, 0, 1) * 0.5);
       col = mixHex(col, DRY, clamp((d - 0.62) * 3.2, 0, 1) * 0.55);
-      col = mixHex(col, shade(col, 0.6), clamp((0.32 - macro) * 1.6, 0, 1) * 0.4); // undulation shadow pools
-      const sh = (0.82 + micro * 0.36) * bump;
+      col = mixHex(col, shade(col, 0.6), clamp((0.32 - macro) * 1.8, 0, 1) * 0.46); // undulation shadow pools
+      const sh = (0.80 + micro * 0.42) * bump;
       const i = (py * WORLD_W + px) * 4;
       D[i] = col[0] * sh; D[i + 1] = col[1] * sh; D[i + 2] = col[2] * sh; D[i + 3] = 255;
     }
@@ -523,7 +540,7 @@ function bakeTerrain(grid) {
   const cliffCells = [];
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++)
     if (grid[gy * GW + gx] === 2) cliffCells.push([gx, gy]);
-  const blob = (cx, cy, r, seed, squash) => {
+  const blob = (cx, cy, r, seed, squash, ctx = x) => {
     const Rr = mulberry32(seed);
     const n = 9; const pts = [];
     for (let i = 0; i < n; i++) {
@@ -531,13 +548,13 @@ function bakeTerrain(grid) {
       const rr = r * (0.82 + Rr() * 0.42);
       pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * (squash || 0.92)]);
     }
-    x.beginPath();
+    ctx.beginPath();
     for (let i = 0; i <= n; i++) {
       const p0 = pts[i % n], p1 = pts[(i + 1) % n];
       const mx = (p0[0] + p1[0]) / 2, my = (p0[1] + p1[1]) / 2;
-      if (i === 0) x.moveTo(mx, my); else x.quadraticCurveTo(p0[0], p0[1], mx, my);
+      if (i === 0) ctx.moveTo(mx, my); else ctx.quadraticCurveTo(p0[0], p0[1], mx, my);
     }
-    x.closePath();
+    ctx.closePath();
   };
   // cast shadow
   x.save(); x.globalAlpha = 0.42; x.fillStyle = '#060a08';
@@ -571,17 +588,38 @@ function bakeTerrain(grid) {
     x.fillStyle = 'rgba(74,110,52,0.42)';
     for (let i = 0; i < 5; i++) { const px = cx + (Rr() - 0.5) * TILE * 0.9, py = cy - 14 + (Rr() - 0.5) * 10; x.beginPath(); x.ellipse(px, py, 4 + Rr() * 7, 2.5 + Rr() * 4, 0, 0, TAU); x.fill(); }
     x.restore();
-    // rim light on the sunward edge
-    x.save(); blob(cx, cy - 7, TILE * 0.60, seed, 0.90);
-    x.strokeStyle = 'rgba(226,230,240,0.34)'; x.lineWidth = 2; x.stroke(); x.restore();
   }
-  // contact darkening where rock meets grass
+  // rim light along the sunward edge of the WHOLE merged rock mass in a single pass.
+  // Stroking each plateau blob individually (the phase-1 approach) left a visible
+  // highlight ring at every tile boundary — a grid bleeding through the organic
+  // terrain. Building one silhouette mask of the union of all cliff blobs and
+  // offsetting it toward LIGHT gives one continuous edge highlight with no seams.
+  if (cliffCells.length) {
+    const mask = makeCanvas(WORLD_W, WORLD_H);
+    mask.x.fillStyle = '#fff';
+    for (const [gx, gy] of cliffCells) {
+      const cx = gx * TILE + TILE / 2, cy = gy * TILE + TILE / 2;
+      const seed = gx * 7331 ^ gy * 917;
+      blob(cx, cy - 7, TILE * 0.60, seed, 0.90, mask.x);
+      mask.x.fill();
+    }
+    const rimBand = silhouette(mask.c, 'rgba(226,230,240,1)');
+    const rim = makeCanvas(WORLD_W, WORLD_H);
+    rim.x.drawImage(rimBand, LIGHT.x * 2.6, LIGHT.y * 2.6);
+    rim.x.globalCompositeOperation = 'destination-out';
+    rim.x.drawImage(rimBand, LIGHT.x * 5.6, LIGHT.y * 5.6);
+    x.save(); x.globalAlpha = 0.55; x.drawImage(rim.c, 0, 0); x.restore();
+  }
+  // contact darkening where rock meets grass — an elliptical falloff instead of a
+  // hard-edged rect so neighbouring cliff tiles' contact shadows blend continuously
+  // rather than showing a boxy seam at each tile boundary.
   for (const [gx, gy] of cliffCells) {
     const cx = gx * TILE + TILE / 2, cy = gy * TILE + TILE / 2;
     if (gy + 1 < GH && grid[(gy + 1) * GW + gx] !== 2) {
       const g = x.createLinearGradient(0, cy + 14, 0, cy + 40);
       g.addColorStop(0, 'rgba(6,10,8,0.55)'); g.addColorStop(1, 'rgba(6,10,8,0)');
-      x.fillStyle = g; x.fillRect(cx - TILE * 0.75, cy + 14, TILE * 1.5, 26);
+      x.fillStyle = g;
+      x.beginPath(); x.ellipse(cx, cy + 27, TILE * 0.78, 15, 0, 0, TAU); x.fill();
     }
   }
 
@@ -611,12 +649,14 @@ function bakeUnit(def) {
       const { c, x } = makeCanvas(S, S);
       x.translate(S / 2, S * 0.62);
       drawCreature(x, def, d, f);
-      outlineSprite(c, 'rgba(9,6,12,0.95)', def.big ? 2.0 : 1.5);
+      outlineSprite(c, 'rgba(6,4,9,0.97)', def.big ? 2.3 : 1.9);
       const armorTier = def.armor || 0;
-      rimLight(c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.44 + Math.min(0.3, armorTier * 0.07));
-      if (armorTier >= 3) rimLight(c, LIGHT.x * 3.1, LIGHT.y * 3.1, 'rgba(206,224,255,0.9)', 0.28); // cold steel sheen — heavy/fortress read as armored at a glance
+      rimLight(c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.56 + Math.min(0.34, armorTier * 0.08));
+      if (armorTier >= 3) rimLight(c, LIGHT.x * 3.1, LIGHT.y * 3.1, 'rgba(206,224,255,0.9)', 0.34); // cold steel sheen — heavy/fortress read as armored at a glance
       lightPass(c, 0.20 + armorTier * 0.015, 0.16, def.tint || null);
-      row.push(c);
+      // saturation/contrast punch-up so 24-30px silhouettes read clearly against the
+      // now-textured, fairly desaturated terrain instead of blending into it
+      row.push(boostContrast(c));
     }
     sheets.push(row);
   }
@@ -839,14 +879,15 @@ function bakeTower(kind, lvl) {
   const base = makeCanvas(S, S), turret = makeCanvas(S, S);
   base.x.translate(S / 2, S * 0.66); turret.x.translate(S / 2, S / 2);
   drawTowerBase(base.x, kind, lvl);
-  outlineSprite(base.c, 'rgba(9,6,12,0.95)', 1.7);
-  rimLight(base.c, LIGHT.x * 2.1, LIGHT.y * 2.1, 'rgba(255,244,208,1)', 0.5 + lvl * 0.05);
+  outlineSprite(base.c, 'rgba(6,4,9,0.97)', 2.0);
+  rimLight(base.c, LIGHT.x * 2.1, LIGHT.y * 2.1, 'rgba(255,244,208,1)', 0.60 + lvl * 0.06);
   lightPass(base.c, 0.16, 0.14);
   drawTowerTurret(turret.x, kind, lvl);
-  outlineSprite(turret.c, 'rgba(9,6,12,0.95)', 1.6);
-  rimLight(turret.c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.55 + lvl * 0.05);
+  outlineSprite(turret.c, 'rgba(6,4,9,0.97)', 1.9);
+  rimLight(turret.c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.64 + lvl * 0.06);
   lightPass(turret.c, 0.14, 0.10);
-  return { base: base.c, turret: turret.c, S, pivot: TOWER_PIVOT(lvl) };
+  // same saturation/contrast punch-up as unit sprites for silhouette readability
+  return { base: boostContrast(base.c), turret: boostContrast(turret.c), S, pivot: TOWER_PIVOT(lvl) };
 }
 function TOWER_PIVOT(lvl) { return 34 + lvl * 9; }
 /* tapered masonry wall in 3/4 view */
@@ -1401,7 +1442,14 @@ function startWave() {
   if (G.phase === 'wave') return;
   const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
   G.phase = 'wave'; G.spawnLeft = w.count; G.spawnTimer = 6;
-  ev('waveStart', { n: w.n, type: w.type, boss: w.boss });
+  // NOTE: ev(type, o) always overwrites o.type with the event name itself, so a
+  // payload field also called "type" (the creep type here) gets silently
+  // clobbered to "waveStart" — CREEPS[e.type] below then resolves to undefined
+  // and .name throws, which previously happened INSIDE the tick loop's
+  // processEvents() call, aborting the rest of loop() (including render()) for
+  // every subsequent frame: the whole game visually froze the instant the first
+  // wave started. Using a differently-named field avoids the collision.
+  ev('waveStart', { n: w.n, ctype: w.type, boss: w.boss });
 }
 
 function updateCreeps(dt) {
@@ -1483,7 +1531,8 @@ function killCreep(c, ownerIdx) {
   G.killed++;
   const o = clamp(ownerIdx | 0, 0, 1);
   G.gold[o] += c.bounty; G.score[o] += c.bounty;
-  ev('kill', { x: c.x, y: c.y - c.z, boss: c.boss, gold: c.bounty, owner: o, type: c.type });
+  // same ev()-clobbers-"type" hazard as waveStart above — use ctype, not type
+  ev('kill', { x: c.x, y: c.y - c.z, boss: c.boss, gold: c.bounty, owner: o, ctype: c.type });
 }
 
 function damage(c, amount, dmgType, ownerIdx, tower) {
@@ -1735,6 +1784,7 @@ const FX = {
       const aa = VFX() * TAU, sp = 40 * VFX();
       this.p({ type: 'blood', x, y, vx: Math.cos(aa) * sp, vy: Math.sin(aa) * sp - 20, z: 8, vz: 30 + VFX() * 50, gz: 260, life: 0.6, size: 1.6 + VFX() * 2, col: '150,28,34', decal: true });
     }
+    this.ring(x, y, 3, 20, '255,225,150', 0.18, 2.6);
     this.light(x, y, 34, '255,220,160', 0.1, 0.7);
   },
   frostHit(x, y) {
@@ -1792,17 +1842,34 @@ const FX = {
     this.addShake(2.4);
   },
   smite(x, y, r) {
-    this.addShake(12); this.flash = 0.30; this.flashCol = '200,180,255';
+    this.addShake(12); this.flash = 0.34; this.flashCol = '200,180,255';
     const pts = jaggedLine(x + (VFX() - 0.5) * 40, y - 620, x, y, 16, 26);
-    this.arc(pts, '210,180,255', 0.3, 7); this.arc(pts, '255,255,255', 0.22, 3);
+    this.arc(pts, '210,180,255', 0.34, 8); this.arc(pts, '255,255,255', 0.24, 3.4);
+    // layered shockwave: a fast bright inner flash + a slower outward pulse so the
+    // impact reads as a persisting multi-frame burst instead of a one-frame flicker
+    this.ring(x, y, 6, r * 1.1, '255,255,255', 0.24, 4);
     this.ring(x, y, 8, r * 1.8, '210,190,255', 0.5, 6);
-    this.ring(x, y, 4, r * 1.1, '255,255,255', 0.28, 3);
-    for (let i = 0; i < 46; i++) {
+    this.ring(x, y, 2, r * 2.8, '160,120,255', 0.8, 3.4);
+    for (let i = 0; i < 54; i++) {
       const a = VFX() * TAU, sp = 80 + VFX() * 260;
       this.p({ type: 'spark', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.7, z: 4, vz: 60 + VFX() * 200, gz: 340, life: 0.5 + VFX() * 0.6, size: 2 + VFX() * 3, col: '220,200,255', add: true });
     }
-    this.light(x, y, r * 5, '190,170,255', 0.6, 2);
+    this.light(x, y, r * 5, '190,170,255', 0.7, 2.2);
     this.scorch(x, y, r * 0.7);
+  },
+  /* Kara Kış (W) has no target point, but a global slow effect with zero visual
+     anchor still read as "nothing happened" — this gives it a proper epicenter
+     burst (screen flash + expanding rings + radiating frost shards) in addition
+     to the existing snow overlay. */
+  blizzardBurst(x, y) {
+    this.addShake(6); this.flash = Math.max(this.flash, 0.36); this.flashCol = '160,225,255';
+    this.ring(x, y, 10, 260, '190,235,255', 0.6, 8);
+    this.ring(x, y, 4, 150, '255,255,255', 0.32, 4);
+    this.light(x, y, 420, '170,220,255', 0.6, 1.8);
+    for (let i = 0; i < 40; i++) {
+      const a = VFX() * TAU, sp = 40 + VFX() * 220;
+      this.p({ type: 'frost', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.6, life: 0.5 + VFX() * 0.5, size: 2 + VFX() * 3.4, col: '200,240,255', add: true, rot: VFX() * TAU, vr: (VFX() - 0.5) * 6, drag: 0.94 });
+    }
   },
   death(x, y, boss, type) {
     const n = boss ? 60 : 14;
@@ -1973,7 +2040,7 @@ function render(dtReal, alpha) {
   for (const d of drawables) {
     if (d.kind === 'creep') { const cr = d.o; const sc = cr.air ? 0.6 : 1; const lift = cr.air ? clamp(1 - cr.z / 60, 0.28, 1) : 1; shadowEll(x, cr.x + SOX * sc, cr.y + (cr.air ? 10 : 2) + SOY * sc, cr.r * 1.5 * sc, cr.r * 0.72 * sc * lift); }
     else if (d.kind === 'tower') shadowEll(x, d.o.x + SOX, d.o.y + 8 + SOY, 20, 11);
-    else if (d.kind === 'decor') shadowEll(x, d.o.x + SOX * d.o.s, d.o.y - 2 + SOY * d.o.s, 16 * d.o.s, 8 * d.o.s);
+    else if (d.kind === 'decor') drawDecorShadow(x, d.o, SOX, SOY);
   }
   x.restore();
 
@@ -2058,6 +2125,26 @@ function shadowEll(x, cx, cy, rx, ry) {
   const g = x.createRadialGradient(cx, cy, 0, cx, cy, rx);
   g.addColorStop(0, 'rgba(0,0,0,0.55)'); g.addColorStop(0.65, 'rgba(0,0,0,0.28)'); g.addColorStop(1, 'rgba(0,0,0,0)');
   x.fillStyle = g; x.beginPath(); x.ellipse(cx, cy, rx, ry, 0, 0, TAU); x.fill();
+}
+/* decor previously only got the same tight ambient contact blob as a 24px creep —
+   far too small/soft relative to an 84px tree to read as a real cast shadow. This
+   adds a proper elongated shadow stretching away from LIGHT (length scaled to the
+   sprite's own height, same as a real object would throw one) plus a tight contact
+   AO right at the base, consistent with how creep/tower shadows already work. */
+function drawDecorShadow(x, d, sox, soy) {
+  const spr = d.t === 'tree' ? R.sprites.tree : R.sprites.rock;
+  const footW = (spr ? spr.width : 60) * d.s, footH = (spr ? spr.height : 60) * d.s;
+  const len = footH * (d.t === 'tree' ? 0.90 : 0.52);
+  const baseX = d.x, baseY = d.y - 2;
+  x.save();
+  x.translate(baseX, baseY);
+  x.rotate(Math.atan2(-LIGHT.y, -LIGHT.x));
+  const g = x.createLinearGradient(0, 0, len, 0);
+  g.addColorStop(0, 'rgba(4,7,5,0.48)'); g.addColorStop(0.55, 'rgba(4,7,5,0.22)'); g.addColorStop(1, 'rgba(4,7,5,0)');
+  x.fillStyle = g;
+  x.beginPath(); x.ellipse(len * 0.44, 0, len * 0.58, Math.max(3, footW * 0.15), 0, 0, TAU); x.fill();
+  x.restore();
+  shadowEll(x, baseX + sox * d.s, baseY + soy * d.s * 0.6, footW * 0.30, footW * 0.15);
 }
 function drawRange(x, cx, cy, r, col) {
   x.save();
@@ -2287,39 +2374,54 @@ function drawProjectile(x, gx, p) {
   const y = p.y - (p.z - 20) * 0.6;
   if (p.kind === 'arrow') {
     x.save(); x.translate(p.x, y); x.rotate(p.ang);
-    x.strokeStyle = 'rgba(255,240,190,0.45)'; x.lineWidth = 1.6;
-    x.beginPath(); x.moveTo(-16, 0); x.lineTo(-3, 0); x.stroke();
-    x.fillStyle = '#6b4a28'; x.fillRect(-9, -0.9, 12, 1.8);
-    x.fillStyle = '#dfe4ee'; x.beginPath(); x.moveTo(3, 0); x.lineTo(-1.5, -2.2); x.lineTo(-1.5, 2.2); x.closePath(); x.fill();
+    // bright additive tracer drawn straight onto the MAIN canvas — at gameplay
+    // zoom a lone 1.6px alpha-0.45 line was functionally invisible, so this gives
+    // a thick soft glow plus a hot core streaking behind the arrowhead
+    x.save(); x.globalCompositeOperation = 'lighter';
+    x.strokeStyle = 'rgba(255,210,120,0.55)'; x.lineWidth = 6; x.lineCap = 'round';
+    x.beginPath(); x.moveTo(-26, 0); x.lineTo(4, 0); x.stroke();
+    x.strokeStyle = 'rgba(255,250,225,0.95)'; x.lineWidth = 2.2; x.lineCap = 'round';
+    x.beginPath(); x.moveTo(-20, 0); x.lineTo(3, 0); x.stroke();
     x.restore();
-    gx.save(); gx.globalAlpha = 0.5; gx.fillStyle = '#ffe6a0'; gx.beginPath(); gx.arc(p.x, y, 3, 0, TAU); gx.fill(); gx.restore();
+    x.strokeStyle = 'rgba(255,240,190,0.75)'; x.lineWidth = 1.8;
+    x.beginPath(); x.moveTo(-16, 0); x.lineTo(-3, 0); x.stroke();
+    x.fillStyle = '#6b4a28'; x.fillRect(-9, -1.1, 12, 2.2);
+    x.fillStyle = '#f2f4fa'; x.beginPath(); x.moveTo(4, 0); x.lineTo(-2, -2.8); x.lineTo(-2, 2.8); x.closePath(); x.fill();
+    x.restore();
+    gx.save(); gx.globalAlpha = 0.75; gx.fillStyle = '#ffe6a0'; gx.beginPath(); gx.arc(p.x, y, 7, 0, TAU); gx.fill(); gx.restore();
   } else if (p.kind === 'shell') {
     shadowEll(x, p.x, p.y + 6, 6, 3);
+    x.save(); x.globalCompositeOperation = 'lighter'; x.fillStyle = 'rgba(255,150,60,0.55)';
+    x.beginPath(); x.arc(p.x, y, 9, 0, TAU); x.fill(); x.restore();
     x.save(); x.translate(p.x, y);
     const g = x.createRadialGradient(-2, -2, 0.5, 0, 0, 6);
-    g.addColorStop(0, '#6e6a66'); g.addColorStop(1, '#1e1c1a');
-    x.fillStyle = g; x.beginPath(); x.arc(0, 0, 5.6, 0, TAU); x.fill();
+    g.addColorStop(0, '#928e88'); g.addColorStop(1, '#1e1c1a');
+    x.fillStyle = g; x.beginPath(); x.arc(0, 0, 6.4, 0, TAU); x.fill();
     x.restore();
-    if (VFX() < 0.6) FX.p({ type: 'smoke', x: p.x, y: y, vx: (VFX() - 0.5) * 10, vy: -8, life: 0.5, size: 3 + VFX() * 3, col: '110,104,98', drag: 0.9 });
-    gx.save(); gx.globalAlpha = 0.35; gx.fillStyle = '#ff9a40'; gx.beginPath(); gx.arc(p.x, y, 5, 0, TAU); gx.fill(); gx.restore();
+    if (VFX() < 0.8) FX.p({ type: 'smoke', x: p.x, y: y, vx: (VFX() - 0.5) * 10, vy: -8, life: 0.5, size: 3 + VFX() * 3, col: '110,104,98', drag: 0.9 });
+    gx.save(); gx.globalAlpha = 0.55; gx.fillStyle = '#ff9a40'; gx.beginPath(); gx.arc(p.x, y, 9, 0, TAU); gx.fill(); gx.restore();
   } else if (p.kind === 'shard') {
+    x.save(); x.globalCompositeOperation = 'lighter'; x.fillStyle = 'rgba(160,230,255,0.5)';
+    x.beginPath(); x.arc(p.x, y, 8, 0, TAU); x.fill(); x.restore();
     x.save(); x.translate(p.x, y); x.rotate(p.ang);
     const g = x.createLinearGradient(-8, 0, 8, 0);
     g.addColorStop(0, 'rgba(140,220,255,0.2)'); g.addColorStop(1, '#e6faff');
     x.fillStyle = g;
-    x.beginPath(); x.moveTo(8, 0); x.lineTo(-4, -3.4); x.lineTo(-7, 0); x.lineTo(-4, 3.4); x.closePath(); x.fill();
+    x.beginPath(); x.moveTo(9, 0); x.lineTo(-4, -3.6); x.lineTo(-7, 0); x.lineTo(-4, 3.6); x.closePath(); x.fill();
     x.restore();
     if (VFX() < 0.7) FX.p({ type: 'frost', x: p.x, y, vx: (VFX() - 0.5) * 14, vy: (VFX() - 0.5) * 14, life: 0.3, size: 1.4, col: '170,230,255', add: true });
-    gx.save(); gx.globalAlpha = 0.6; gx.fillStyle = '#9ee0ff'; gx.beginPath(); gx.arc(p.x, y, 4.5, 0, TAU); gx.fill(); gx.restore();
+    gx.save(); gx.globalAlpha = 0.7; gx.fillStyle = '#9ee0ff'; gx.beginPath(); gx.arc(p.x, y, 6, 0, TAU); gx.fill(); gx.restore();
   } else if (p.kind === 'blob') {
     shadowEll(x, p.x, p.y + 6, 6, 3);
+    x.save(); x.globalCompositeOperation = 'lighter'; x.fillStyle = 'rgba(160,255,110,0.4)';
+    x.beginPath(); x.arc(p.x, y, 8, 0, TAU); x.fill(); x.restore();
     x.save(); x.translate(p.x, y);
     const g = x.createRadialGradient(-1.5, -1.5, 0.5, 0, 0, 6);
     g.addColorStop(0, '#c8ff90'); g.addColorStop(1, '#3f7a22');
-    x.fillStyle = g; x.beginPath(); x.ellipse(0, 0, 6, 5.2, Math.sin(R.time * 12) * 0.3, 0, TAU); x.fill();
+    x.fillStyle = g; x.beginPath(); x.ellipse(0, 0, 6.4, 5.6, Math.sin(R.time * 12) * 0.3, 0, TAU); x.fill();
     x.restore();
     if (VFX() < 0.5) FX.p({ type: 'acid', x: p.x, y, vy: 6, life: 0.4, size: 1.6, col: '140,220,90' });
-    gx.save(); gx.globalAlpha = 0.4; gx.fillStyle = '#9cff6a'; gx.beginPath(); gx.arc(p.x, y, 5, 0, TAU); gx.fill(); gx.restore();
+    gx.save(); gx.globalAlpha = 0.55; gx.fillStyle = '#9cff6a'; gx.beginPath(); gx.arc(p.x, y, 7, 0, TAU); gx.fill(); gx.restore();
   }
 }
 function drawParticles(x, gx) {
@@ -2357,21 +2459,51 @@ function drawParticles(x, gx) {
         ctx.globalAlpha = a * 0.5; ctx.strokeStyle = `rgba(${colStr},${a * 0.6})`; ctx.lineWidth = s * 0.8;
         ctx.beginPath(); ctx.moveTo(p.x, y); ctx.lineTo(p.x - p.vx * 0.02, y - p.vy * 0.02); ctx.stroke();
       }
+      // sparks/embers marked additive only ever hit the half-res, blurred glow
+      // canvas — against a bright daylit field that bloom pass alone reads as
+      // near-nothing. Stamp a small crisp core straight onto the main canvas too
+      // so hits/muzzles/bursts are legible even before the bloom composite lands.
+      if (p.add && (p.type === 'spark' || p.type === 'ember')) {
+        x.save(); x.globalCompositeOperation = 'lighter'; x.globalAlpha = a;
+        x.fillStyle = `rgba(${colStr},1)`;
+        x.beginPath(); x.arc(p.x, y, Math.max(1, s * 0.55), 0, TAU); x.fill();
+        x.restore();
+      }
     }
     ctx.restore();
     if (p.decal && p.z <= 0.01 && !p.done) { p.done = true; FX.splat(p.x, p.y, p.size * 1.2, `rgba(${p.col},0.34)`); }
   }
 }
 function drawArcsRings(x, gx) {
+  // NOTE: previously these only drew onto the half-res, blurred additive glow
+  // canvas (gx) and never touched the main canvas (x) at all — so shockwave
+  // rings and lightning bolts (Q smite, chain lightning, frost/explosion/acid
+  // rings) relied entirely on the dim, blurred bloom composite to be visible,
+  // which reads as "nothing happened" at gameplay scale/zoom. Now a crisp core
+  // is stroked straight onto the main canvas (guaranteed legible), with the
+  // wider soft pass kept on gx purely for the bloom halo.
   for (const r of FX.rings) {
     const t = 1 - r.life / r.max, a = 1 - t;
     const rad = lerp(r.r0, r.r1, easeOut(t));
-    gx.save(); gx.globalAlpha = a * 0.9; gx.strokeStyle = `rgba(${r.col},1)`; gx.lineWidth = r.w * (1 - t * 0.6);
+    x.save(); x.globalCompositeOperation = 'lighter'; x.globalAlpha = a;
+    x.strokeStyle = `rgba(${r.col},1)`; x.lineWidth = r.w * (1 - t * 0.6) + 1.6;
+    x.beginPath(); x.ellipse(r.x, r.y, rad, rad * 0.62, 0, 0, TAU); x.stroke();
+    x.strokeStyle = 'rgba(255,255,255,0.85)'; x.lineWidth = Math.max(1, r.w * 0.32);
+    x.beginPath(); x.ellipse(r.x, r.y, rad, rad * 0.62, 0, 0, TAU); x.stroke();
+    x.restore();
+    gx.save(); gx.globalAlpha = a * 0.9; gx.strokeStyle = `rgba(${r.col},1)`; gx.lineWidth = (r.w * (1 - t * 0.6)) * 2.4;
     gx.beginPath(); gx.ellipse(r.x, r.y, rad, rad * 0.62, 0, 0, TAU); gx.stroke(); gx.restore();
   }
   for (const a of FX.arcs) {
     const t = a.life / a.max;
-    gx.save(); gx.globalAlpha = t; gx.strokeStyle = `rgba(${a.col},1)`; gx.lineWidth = a.w * t;
+    x.save(); x.globalCompositeOperation = 'lighter'; x.globalAlpha = t;
+    x.strokeStyle = `rgba(${a.col},1)`; x.lineWidth = a.w * t + 1.4;
+    x.lineJoin = 'round'; x.lineCap = 'round';
+    x.beginPath(); a.pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.stroke();
+    x.strokeStyle = 'rgba(255,255,255,0.95)'; x.lineWidth = Math.max(1, a.w * t * 0.42);
+    x.beginPath(); a.pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.stroke();
+    x.restore();
+    gx.save(); gx.globalAlpha = t; gx.strokeStyle = `rgba(${a.col},1)`; gx.lineWidth = a.w * t * 2.2;
     gx.lineJoin = 'round'; gx.lineCap = 'round';
     gx.beginPath(); a.pts.forEach((p, i) => i ? gx.lineTo(p[0], p[1]) : gx.moveTo(p[0], p[1])); gx.stroke(); gx.restore();
   }
@@ -2784,9 +2916,9 @@ function processEvents(list) {
       case 'poisonTick': FX.poisonTick(e.x, e.y); break;
       case 'chain': FX.chain(e.from, e.hits); break;
       case 'smite': FX.smite(e.x, e.y, e.r); break;
-      case 'blizzard': FX.blizzard = 1.4; break;
+      case 'blizzard': FX.blizzard = 1.4; FX.blizzardBurst(e.x || WORLD_W / 2, e.y || WORLD_H / 2); break;
       case 'kill':
-        FX.death(e.x, e.y, e.boss, e.type);
+        FX.death(e.x, e.y, e.boss, e.ctype);
         if (e.owner === NET.me) FX.gold(e.x, e.y - 10, e.gold);
         Audio2.play(e.boss ? 'bossDeath' : 'death', e.boss ? 1 : 0.5, panOf(e.x));
         if (e.boss) UI.toast('Kağan devrildi! +' + e.gold, '#ffd76a');
@@ -2796,7 +2928,7 @@ function processEvents(list) {
         UI.toast(`Kapıdan sızdı! −${e.amt} can`, '#ff7a6a');
         break;
       case 'waveStart':
-        Audio2.play('wave'); UI.toast(`Dalga ${e.n} — ${CREEPS[e.type].name}`, e.boss ? '#ff8a5a' : '#ffe0a0');
+        Audio2.play('wave'); UI.toast(`Dalga ${e.n} — ${CREEPS[e.ctype].name}`, e.boss ? '#ff8a5a' : '#ffe0a0');
         FX.flash = 0.10; FX.flashCol = e.boss ? '255,80,40' : '255,220,150';
         break;
       case 'waveClear': UI.toast(`Dalga ${e.n} temizlendi · +${e.bonus} altın`, '#8fe08a'); Audio2.play('coin'); break;
@@ -2937,7 +3069,14 @@ function loop(ts) {
   if (!NET.active || NET.isHost) {
     acc += dt * 1000 * (G.phase === 'over' || G.phase === 'won' ? 0 : G.speed);
     let guard = 0;
-    while (acc >= TICK_MS && guard++ < 8) { acc -= TICK_MS; EVQ.length = 0; simTick(); processEvents(EVQ); if (NET.active) NET.buf.push(...EVQ); }
+    // NOTE: the queue is cleared AFTER simTick()+processEvents() run, not before.
+    // Command-triggered presentation events (spell casts, builds, sells — pushed
+    // by issue()/applyCmd() from an input handler BETWEEN ticks) used to sit in
+    // EVQ until the next tick, at which point the old "clear first" ordering wiped
+    // them before processEvents ever saw them: Q/W casts, builds etc. produced no
+    // visible burst at all. Now anything queued since the last tick rides along
+    // with this tick's own events instead of being silently discarded.
+    while (acc >= TICK_MS && guard++ < 8) { acc -= TICK_MS; simTick(); processEvents(EVQ); if (NET.active) NET.buf.push(...EVQ); EVQ.length = 0; }
     if (NET.active && NET.conn && NET.conn.open && ts - NET.lastSend > 66) {
       NET.lastSend = ts;
       const snap = snapshot(); snap.ev = NET.buf.splice(0);
