@@ -146,6 +146,8 @@
 'use strict';
 
 const TILE = 40, GW = 44, GH = 20;
+/* rows held clear of rock so the maze has a northern and a southern detour */
+const LANE_ROWS = [2, 16];
 const WORLD_W = TILE * GW, WORLD_H = TILE * GH;
 const TICK_HZ = 30, TICK_MS = 1000 / TICK_HZ;
 const DIRS = 8, FRAMES = 4;
@@ -1274,6 +1276,7 @@ function generateMap(seed) {
   for (let y = my - 1; y <= my + 1; y++) { g[idxOf(0, y)] = 3; g[idxOf(1, y)] = 3; g[idxOf(GW - 1, y)] = 3; g[idxOf(GW - 2, y)] = 3; }
   // interior rock formations (obstacles that shape mazes)
   const blobs = 8;
+  // rows kept permanently rock-free as north/south detour lanes (see below)
   for (let b = 0; b < blobs; b++) {
     const cx = 5 + (R() * (GW - 12)) | 0, cy = 3 + (R() * (GH - 7)) | 0;
     const rw = 1 + (R() * 2.4) | 0, rh = 1 + (R() * 2.0) | 0;
@@ -1284,9 +1287,18 @@ function generateMap(seed) {
       if (d < 1 && R() > 0.18) g[idxOf(x, y)] = 2;
     }
   }
+  // open detour lanes: keep two full-width rows clear of rock so the maze can
+  // route north or south of the middle corridor instead of only straight across
+  for (const ly of LANE_ROWS) for (let x = 1; x < GW - 1; x++) {
+    const i = idxOf(x, ly); if (g[i] === 2) g[i] = 0;
+  }
   G.grid = g;
   G.towerAt = new Int32Array(GW * GH).fill(-1);
-  G.dist = new Float32Array(GW * GH);
+  // must be Float64Array: computeFlow's heap keys are float64, and a float32
+  // distance array rounds diagonal costs (14.14) to a value that can compare
+  // greater than its own heap key, making the `d > dist[i]` staleness check
+  // discard the node and silently kill the flood fill along every diagonal.
+  G.dist = new Float64Array(GW * GH);
   computeFlow();
   if (!G.flowOK) return generateMap(seed + 1);
   return g;
