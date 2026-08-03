@@ -392,12 +392,19 @@ function silhouette(cv, color) {
   x.globalCompositeOperation = 'source-in'; x.fillStyle = color; x.fillRect(0, 0, cv.width, cv.height);
   return c;
 }
-/* crisp dark contact outline like Warcraft unit art */
+/* crisp dark contact outline like Warcraft unit art.
+   NOTE: getContext('2d') hands back the SAME context the sprite was drawn with,
+   translate() and all. Every one of these post-process helpers works in canvas
+   pixel space, so each resets the transform first — without that, the outline /
+   rim / light-pass all landed offset by the sprite's own origin, which is what
+   painted the hard black slab and the pale wedge next to towers, trees and
+   rocks (the light pass' fillRect landed in the lower-right quadrant). */
 function outlineSprite(cv, color = 'rgba(9,6,12,0.95)', w = 1.6) {
   const sil = silhouette(cv, color);
-  const o = cv.getContext('2d'); o.globalCompositeOperation = 'destination-over';
+  const o = cv.getContext('2d'); o.save(); o.setTransform(1, 0, 0, 1, 0, 0);
+  o.globalCompositeOperation = 'destination-over';
   for (let a = 0; a < 8; a++) { const an = a / 8 * TAU; o.drawImage(sil, Math.cos(an) * w, Math.sin(an) * w); }
-  o.globalCompositeOperation = 'source-over';
+  o.globalCompositeOperation = 'source-over'; o.restore();
 }
 /* thin specular crescent along the light-facing edge — the single biggest
    readability win for hand-drawn canvas sprites */
@@ -408,7 +415,8 @@ function rimLight(cv, dx, dy, color, alpha) {
   x.globalCompositeOperation = 'destination-out';
   x.drawImage(sil, dx * 3.0, dy * 3.0);
   const o = cv.getContext('2d');
-  o.save(); o.globalCompositeOperation = 'source-atop'; o.globalAlpha = alpha;
+  o.save(); o.setTransform(1, 0, 0, 1, 0, 0);
+  o.globalCompositeOperation = 'source-atop'; o.globalAlpha = alpha;
   o.drawImage(c, 0, 0); o.restore();
 }
 /* saturate/contrast/brightness pass — applied as the LAST step of unit/tower
@@ -428,7 +436,7 @@ function boostContrast(cv, sat = 1.34, con = 1.14, bri = 1.03) {
 /* sun light + bounce light pass */
 function lightPass(cv, sun = 0.34, bounce = 0.18, tint = null) {
   const x = cv.getContext('2d'); const h = cv.height;
-  x.save(); x.globalCompositeOperation = 'source-atop';
+  x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-atop';
   let g = x.createLinearGradient(0, 0, 0, h);
   g.addColorStop(0, `rgba(255,247,216,${sun})`); g.addColorStop(0.38, 'rgba(255,240,200,0)');
   g.addColorStop(0.66, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(64,84,150,${bounce})`);
@@ -538,15 +546,20 @@ function bakeTerrain(grid) {
   x.beginPath(); x.moveTo(0, WORLD_H / 2); x.bezierCurveTo(WORLD_W * 0.3, WORLD_H * 0.36, WORLD_W * 0.7, WORLD_H * 0.64, WORLD_W, WORLD_H / 2); x.stroke();
   x.restore();
 
-  // ---- cliffs: one merged rock mass, not a grid of squares ----
+  // ---- cliffs: one merged organic rock mass, never a grid of squares ----
+  // Everything below is driven off TWO union masks (rock face + plateau top) built
+  // from per-tile jittered, overlapping blobs. Shadows, contact darkening and the
+  // rim light are then derived from those masks with blurs/offsets, so they follow
+  // the silhouette of the WHOLE formation. Nothing is drawn per tile in a way that
+  // can leave a tile-aligned straight edge behind.
   const cliffCells = [];
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++)
     if (grid[gy * GW + gx] === 2) cliffCells.push([gx, gy]);
-  const blob = (cx, cy, r, seed, squash, ctx = x) => {
+  const blob = (cx, cy, r, seed, squash, ctx = x, rot = 0) => {
     const Rr = mulberry32(seed);
     const n = 9; const pts = [];
     for (let i = 0; i < n; i++) {
-      const a = i / n * TAU;
+      const a = i / n * TAU + rot;
       const rr = r * (0.82 + Rr() * 0.42);
       pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * (squash || 0.92)]);
     }
@@ -558,71 +571,227 @@ function bakeTerrain(grid) {
     }
     ctx.closePath();
   };
-  // cast shadow
-  x.save(); x.globalAlpha = 0.42; x.fillStyle = '#060a08';
-  for (const [gx, gy] of cliffCells) { blob(gx * TILE + TILE / 2 + 7, gy * TILE + TILE / 2 + 11, TILE * 0.70, gx * 7331 ^ gy * 917, 0.9); x.fill(); }
-  x.restore();
-  // rock face (dark, sits low)
-  for (const [gx, gy] of cliffCells) {
-    const cx = gx * TILE + TILE / 2, cy = gy * TILE + TILE / 2;
-    blob(cx, cy + 5, TILE * 0.66, gx * 7331 ^ gy * 917, 0.92);
-    const g = x.createLinearGradient(0, cy - 18, 0, cy + 24);
-    g.addColorStop(0, 'rgb(74,72,80)'); g.addColorStop(0.55, 'rgb(48,47,54)'); g.addColorStop(1, 'rgb(24,24,30)');
-    x.fillStyle = g; x.fill();
-  }
-  // plateau top
-  for (const [gx, gy] of cliffCells) {
-    const cx = gx * TILE + TILE / 2, cy = gy * TILE + TILE / 2;
-    const seed = gx * 7331 ^ gy * 917;
-    blob(cx, cy - 7, TILE * 0.60, seed, 0.90);
-    const g = x.createLinearGradient(cx - 18, cy - 24, cx + 16, cy + 12);
-    g.addColorStop(0, 'rgb(158,156,160)'); g.addColorStop(0.45, 'rgb(112,110,118)'); g.addColorStop(1, 'rgb(72,71,80)');
-    x.fillStyle = g; x.fill();
-    x.save(); x.clip();
-    const Rr = mulberry32(seed ^ 55);
-    for (let i = 0; i < 8; i++) {
-      const px = cx + (Rr() - 0.5) * TILE, py = cy - 7 + (Rr() - 0.5) * TILE * 0.8, r = 4 + Rr() * 11;
-      const pts = []; const n2 = 5 + (Rr() * 3 | 0);
-      for (let k = 0; k < n2; k++) { const a = k / n2 * TAU; pts.push([Math.cos(a) * r * (0.6 + Rr() * 0.6), Math.sin(a) * r * (0.45 + Rr() * 0.5)]); }
-      poly(x, pts, shade([96, 94, 102], 0.72 + Rr() * 0.75), Rr() * 3, px, py);
-    }
-    // moss caps
-    x.fillStyle = 'rgba(74,110,52,0.42)';
-    for (let i = 0; i < 5; i++) { const px = cx + (Rr() - 0.5) * TILE * 0.9, py = cy - 14 + (Rr() - 0.5) * 10; x.beginPath(); x.ellipse(px, py, 4 + Rr() * 7, 2.5 + Rr() * 4, 0, 0, TAU); x.fill(); }
-    x.restore();
-  }
-  // rim light along the sunward edge of the WHOLE merged rock mass in a single pass.
-  // Stroking each plateau blob individually (the phase-1 approach) left a visible
-  // highlight ring at every tile boundary — a grid bleeding through the organic
-  // terrain. Building one silhouette mask of the union of all cliff blobs and
-  // offsetting it toward LIGHT gives one continuous edge highlight with no seams.
   if (cliffCells.length) {
-    const mask = makeCanvas(WORLD_W, WORLD_H);
-    mask.x.fillStyle = '#fff';
-    for (const [gx, gy] of cliffCells) {
-      const cx = gx * TILE + TILE / 2, cy = gy * TILE + TILE / 2;
+    /* per-tile jitter (centre offset, rotation, radius, squash, tonal value) plus
+       1-2 extra lobes that deliberately spill across the tile border, so adjacent
+       cells interlock into one mass instead of reading as identical eggs. */
+    const rocks = cliffCells.map(([gx, gy]) => {
       const seed = gx * 7331 ^ gy * 917;
-      blob(cx, cy - 7, TILE * 0.60, seed, 0.90, mask.x);
-      mask.x.fill();
+      const Rr = mulberry32(seed ^ 0x9E37);
+      const lobes = [];
+      const nl = 1 + (Rr() * 2 | 0);
+      for (let i = 0; i < nl; i++) lobes.push({
+        dx: (Rr() - 0.5) * TILE * 0.86, dy: (Rr() - 0.5) * TILE * 0.56,
+        r: 0.26 + Rr() * 0.22, rot: Rr() * TAU, seed: (seed ^ (i * 7717 + 313)) | 0
+      });
+      return {
+        gx, gy, seed,
+        cx: gx * TILE + TILE / 2 + (Rr() - 0.5) * 11,
+        cy: gy * TILE + TILE / 2 + (Rr() - 0.5) * 9,
+        rot: Rr() * TAU, top: 0.55 + Rr() * 0.16, face: 0.62 + Rr() * 0.14,
+        squash: 0.84 + Rr() * 0.16, tone: 0.84 + Rr() * 0.34, lift: 5 + Rr() * 5, lobes
+      };
+    });
+    const facePath = (r, ctx) => {
+      blob(r.cx, r.cy + 5, TILE * r.face, r.seed, r.squash, ctx, r.rot); ctx.fill();
+      for (const l of r.lobes) { blob(r.cx + l.dx, r.cy + 5 + l.dy, TILE * (l.r + 0.06), l.seed, r.squash, ctx, l.rot); ctx.fill(); }
+    };
+    const topPath = (r, ctx) => {
+      blob(r.cx, r.cy - r.lift, TILE * r.top, r.seed, r.squash, ctx, r.rot); ctx.fill();
+      for (const l of r.lobes) { blob(r.cx + l.dx, r.cy - r.lift + l.dy, TILE * l.r, l.seed, r.squash, ctx, l.rot); ctx.fill(); }
+    };
+    const faceMask = makeCanvas(WORLD_W, WORLD_H);
+    faceMask.x.fillStyle = '#fff'; for (const r of rocks) facePath(r, faceMask.x);
+    const topMask = makeCanvas(WORLD_W, WORLD_H);
+    topMask.x.fillStyle = '#fff'; for (const r of rocks) topPath(r, topMask.x);
+    // one reusable scratch buffer for every mask-derived pass
+    const sc = makeCanvas(WORLD_W, WORLD_H);
+    const canFilter = typeof sc.x.filter === 'string';
+    const resetSc = () => {
+      sc.x.setTransform(1, 0, 0, 1, 0, 0); sc.x.globalCompositeOperation = 'source-over';
+      sc.x.globalAlpha = 1; sc.x.filter = 'none'; sc.x.clearRect(0, 0, WORLD_W, WORLD_H);
+    };
+    const tintSc = col => { sc.x.globalCompositeOperation = 'source-in'; sc.x.fillStyle = col; sc.x.fillRect(0, 0, WORLD_W, WORLD_H); };
+    /* the two shadow passes are pure blur — running them at half resolution is
+       visually identical once blurred and keeps the terrain bake cheap. */
+    const HW = WORLD_W >> 1, HH = WORLD_H >> 1;
+    const faceLo = makeCanvas(HW, HH);
+    faceLo.x.scale(0.5, 0.5); faceLo.x.fillStyle = '#fff'; for (const r of rocks) facePath(r, faceLo.x);
+    const lo = makeCanvas(HW, HH);
+    const resetLo = () => {
+      lo.x.setTransform(1, 0, 0, 1, 0, 0); lo.x.globalCompositeOperation = 'source-over';
+      lo.x.globalAlpha = 1; lo.x.filter = 'none'; lo.x.clearRect(0, 0, HW, HH);
+    };
+
+    // (a) cast shadow: the merged silhouette, pushed away from LIGHT and heavily
+    // blurred. One soft organic shape for the whole formation.
+    resetLo();
+    if (canFilter) lo.x.filter = 'blur(4.5px)';
+    lo.x.drawImage(faceLo.c, -LIGHT.x * 6.5, -LIGHT.y * 4 + 2.5);
+    lo.x.filter = 'none';
+    lo.x.globalCompositeOperation = 'source-in'; lo.x.fillStyle = 'rgba(6,10,8,1)'; lo.x.fillRect(0, 0, HW, HH);
+    x.save(); x.globalAlpha = 0.44; x.drawImage(lo.c, 0, 0, WORLD_W, WORLD_H); x.restore();
+    // (b) contact darkening / ambient occlusion: the same silhouette blurred tight
+    // and kept OUTSIDE the rock, so grass darkens where it meets stone with no
+    // straight edge anywhere. Replaces the old per-tile fillRect/ellipse band.
+    resetLo();
+    if (canFilter) lo.x.filter = 'blur(3px)';
+    lo.x.drawImage(faceLo.c, 0, 2);
+    lo.x.filter = 'none';
+    lo.x.globalCompositeOperation = 'destination-out';
+    lo.x.drawImage(faceLo.c, 0, 0);
+    lo.x.globalCompositeOperation = 'source-in'; lo.x.fillStyle = 'rgba(6,10,8,1)'; lo.x.fillRect(0, 0, HW, HH);
+    x.save(); x.globalAlpha = 0.55; x.drawImage(lo.c, 0, 0, WORLD_W, WORLD_H); x.restore();
+
+    // (c) rock face and (d) plateau top are filled as ONE union each, through a
+    // single world-scale gradient — per-cell gradients were what made every tile
+    // read as its own separate egg. All variation after this point is either
+    // sub-tile (rubble, cracks) or larger than a tile (mottling, boulders), so
+    // nothing lines up with the grid.
+    resetSc();
+    let gf = sc.x.createLinearGradient(0, 0, WORLD_W * 0.35, WORLD_H);
+    gf.addColorStop(0, 'rgb(64,63,72)'); gf.addColorStop(0.5, 'rgb(44,44,52)'); gf.addColorStop(1, 'rgb(26,26,33)');
+    sc.x.fillStyle = gf; sc.x.fillRect(0, 0, WORLD_W, WORLD_H);
+    sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(faceMask.c, 0, 0);
+    x.drawImage(sc.c, 0, 0);
+    resetSc();
+    gf = sc.x.createLinearGradient(0, 0, WORLD_W * 0.4, WORLD_H);
+    gf.addColorStop(0, 'rgb(148,148,154)'); gf.addColorStop(0.45, 'rgb(116,114,122)'); gf.addColorStop(1, 'rgb(84,83,92)');
+    sc.x.fillStyle = gf; sc.x.fillRect(0, 0, WORLD_W, WORLD_H);
+    // per-cell tonal wash — soft radial patches, no hard cell boundary anywhere
+    for (const r of rocks) {
+      const t = (r.tone - 1) * 2.6;
+      const g2 = sc.x.createRadialGradient(r.cx, r.cy - r.lift, 0, r.cx, r.cy - r.lift, TILE * 0.9);
+      g2.addColorStop(0, t > 0 ? `rgba(232,232,240,${clamp(t, 0, 0.55)})` : `rgba(18,18,26,${clamp(-t, 0, 0.55)})`);
+      g2.addColorStop(1, 'rgba(0,0,0,0)');
+      sc.x.fillStyle = g2; sc.x.beginPath(); sc.x.ellipse(r.cx, r.cy - r.lift, TILE * 0.9, TILE * 0.7, 0, 0, TAU); sc.x.fill();
     }
-    const rimBand = silhouette(mask.c, 'rgba(226,230,240,1)');
-    const rim = makeCanvas(WORLD_W, WORLD_H);
-    rim.x.drawImage(rimBand, LIGHT.x * 2.6, LIGHT.y * 2.6);
-    rim.x.globalCompositeOperation = 'destination-out';
-    rim.x.drawImage(rimBand, LIGHT.x * 5.6, LIGHT.y * 5.6);
-    x.save(); x.globalAlpha = 0.55; x.drawImage(rim.c, 0, 0); x.restore();
-  }
-  // contact darkening where rock meets grass — an elliptical falloff instead of a
-  // hard-edged rect so neighbouring cliff tiles' contact shadows blend continuously
-  // rather than showing a boxy seam at each tile boundary.
-  for (const [gx, gy] of cliffCells) {
-    const cx = gx * TILE + TILE / 2, cy = gy * TILE + TILE / 2;
-    if (gy + 1 < GH && grid[(gy + 1) * GW + gx] !== 2) {
-      const g = x.createLinearGradient(0, cy + 14, 0, cy + 40);
-      g.addColorStop(0, 'rgba(6,10,8,0.55)'); g.addColorStop(1, 'rgba(6,10,8,0)');
-      x.fillStyle = g;
-      x.beginPath(); x.ellipse(cx, cy + 27, TILE * 0.78, 15, 0, 0, TAU); x.fill();
+    sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(topMask.c, 0, 0);
+    x.drawImage(sc.c, 0, 0);
+    // (d2) boulders sitting on the cap — only some cells get one, at wildly
+    // varying size, so the macro forms never repeat cell to cell
+    const boulders = [];
+    for (const r of rocks) {
+      const Rb = mulberry32(r.seed ^ 0x7A11);
+      if (Rb() > 0.55) continue;
+      boulders.push({
+        bx: r.cx + (Rb() - 0.5) * TILE * 0.7, by: r.cy - r.lift - 3 + (Rb() - 0.5) * TILE * 0.5,
+        br: TILE * (0.20 + Rb() * 0.30), tn: 0.86 + Rb() * 0.36,
+        bsq: 0.78 + Rb() * 0.2, brot: Rb() * TAU, bseed: (r.seed ^ 0x33F1) | 0
+      });
     }
+    // all boulder contact shadows are stamped flat first and blurred by a SINGLE
+    // filtered drawImage — leaving ctx.filter set across ~100 individual fills
+    // costs a full-canvas filter pass per fill (seconds, not milliseconds).
+    resetLo();
+    lo.x.save(); lo.x.scale(0.5, 0.5); lo.x.fillStyle = '#fff';
+    for (const o of boulders) { blob(o.bx - LIGHT.x * 4, o.by - LIGHT.y * 3 + 2, o.br * 1.02, o.bseed, o.bsq, lo.x, o.brot); lo.x.fill(); }
+    lo.x.restore();
+    resetSc();
+    if (canFilter) sc.x.filter = 'blur(3px)';
+    sc.x.drawImage(lo.c, 0, 0, WORLD_W, WORLD_H);
+    sc.x.filter = 'none';
+    tintSc('rgba(20,20,28,1)');
+    sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(topMask.c, 0, 0);
+    x.save(); x.globalAlpha = 0.5; x.drawImage(sc.c, 0, 0); x.restore();
+    for (const o of boulders) {
+      blob(o.bx, o.by, o.br, o.bseed, o.bsq, x, o.brot);
+      const g2 = x.createLinearGradient(o.bx - o.br, o.by - o.br, o.bx + o.br * 0.7, o.by + o.br);
+      g2.addColorStop(0, rgb(...shade([196, 194, 200], o.tn)));
+      g2.addColorStop(0.5, rgb(...shade([120, 118, 126], o.tn)));
+      g2.addColorStop(1, rgb(...shade([52, 52, 62], o.tn)));
+      x.fillStyle = g2; x.fill();
+      // boulders join the silhouette that later drives mottling and the rim light
+      blob(o.bx, o.by, o.br, o.bseed, o.bsq, topMask.x, o.brot);
+      topMask.x.fillStyle = '#fff'; topMask.x.fill();
+    }
+    // (d3) sub-tile rubble chips + moss, clipped to each cell's own cap
+    for (const r of rocks) {
+      x.save();
+      blob(r.cx, r.cy - r.lift, TILE * r.top, r.seed, r.squash, x, r.rot); x.clip();
+      const Rr = mulberry32(r.seed ^ 55);
+      for (let i = 0; i < 7; i++) {
+        const px = r.cx + (Rr() - 0.5) * TILE, py = r.cy - r.lift + (Rr() - 0.5) * TILE * 0.8, rr = 3 + Rr() * 9;
+        const pts = []; const n2 = 5 + (Rr() * 3 | 0);
+        for (let k = 0; k < n2; k++) { const a = k / n2 * TAU; pts.push([Math.cos(a) * rr * (0.6 + Rr() * 0.6), Math.sin(a) * rr * (0.45 + Rr() * 0.5)]); }
+        x.globalAlpha = 0.55;
+        poly(x, pts, shade([100, 98, 106], (0.78 + Rr() * 0.6) * r.tone), r.rot + Rr() * 3, px, py);
+        x.globalAlpha = 1;
+      }
+      for (let i = 0; i < 5; i++) {
+        const px = r.cx + (Rr() - 0.5) * TILE * 0.9, py = r.cy - r.lift - 7 + (Rr() - 0.5) * 10;
+        const mr = 4 + Rr() * 7;
+        const gm = x.createRadialGradient(px, py, 0, px, py, mr);
+        gm.addColorStop(0, `rgba(${72 + Rr() * 34 | 0},${112 + Rr() * 34 | 0},${50 + Rr() * 24 | 0},0.5)`);
+        gm.addColorStop(1, 'rgba(60,96,44,0)');
+        x.fillStyle = gm; x.beginPath(); x.ellipse(px, py, mr, 2.5 + Rr() * 4, Rr() * 3, 0, TAU); x.fill();
+      }
+      x.restore();
+    }
+    // (e) large soft tonal mottling across the WHOLE mass, on its own frequency —
+    // unrelated to the tile grid, so no two neighbouring cells read the same value
+    resetSc();
+    const Rm = mulberry32(0x51CE);
+    for (let i = 0; i < cliffCells.length * 3; i++) {
+      const cell = cliffCells[(Rm() * cliffCells.length) | 0];
+      const px = cell[0] * TILE + (Rm() - 0.5) * TILE * 2.2, py = cell[1] * TILE + (Rm() - 0.5) * TILE * 2.0;
+      const rr = 10 + Rm() * 34, dark = Rm() < 0.55;
+      const g = sc.x.createRadialGradient(px, py, 0, px, py, rr);
+      g.addColorStop(0, dark ? 'rgba(16,18,26,0.34)' : 'rgba(214,216,226,0.26)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      sc.x.fillStyle = g; sc.x.beginPath(); sc.x.ellipse(px, py, rr, rr * (0.5 + Rm() * 0.5), Rm() * 3, 0, TAU); sc.x.fill();
+    }
+    // fissures wandering across the mass, ignoring tile borders entirely
+    sc.x.lineCap = 'round';
+    for (let i = 0; i < (cliffCells.length / 2) | 0; i++) {
+      const cell = cliffCells[(Rm() * cliffCells.length) | 0];
+      const px = cell[0] * TILE + Rm() * TILE, py = cell[1] * TILE + Rm() * TILE, a = Rm() * TAU;
+      const steps = [];
+      let qa = a;
+      for (let s = 0; s < 3; s++) { qa += (Rm() - 0.5) * 1.3; steps.push([Math.cos(qa) * (4 + Rm() * 6), Math.sin(qa) * (3 + Rm() * 5)]); }
+      for (const [col, w, off] of [['rgba(226,228,236,0.16)', 1.1, 0.7], ['rgba(16,16,24,0.26)', 0.9, 0]]) {
+        let qx = px, qy = py;
+        sc.x.strokeStyle = col; sc.x.lineWidth = w;
+        sc.x.beginPath(); sc.x.moveTo(qx + off, qy + off);
+        for (const st of steps) { qx += st[0]; qy += st[1]; sc.x.lineTo(qx + off, qy + off); }
+        sc.x.stroke();
+      }
+    }
+    // fine grain so the cap is not a flat wash of grey
+    for (let i = 0; i < cliffCells.length * 26; i++) {
+      const cell = cliffCells[(Rm() * cliffCells.length) | 0];
+      const px = cell[0] * TILE + Rm() * TILE, py = cell[1] * TILE + Rm() * TILE, rr = 0.6 + Rm() * 1.8;
+      sc.x.fillStyle = Rm() < 0.5 ? `rgba(228,228,236,${0.10 + Rm() * 0.22})` : `rgba(20,20,28,${0.10 + Rm() * 0.24})`;
+      sc.x.beginPath(); sc.x.ellipse(px, py, rr, rr * 0.75, 0, 0, TAU); sc.x.fill();
+    }
+    sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(topMask.c, 0, 0);
+    x.save(); x.globalAlpha = 0.6; x.drawImage(sc.c, 0, 0); x.restore();
+
+    // (f) rim light: a single continuous crescent along the LIGHT-facing (upper
+    // left) edge of the merged plateau silhouette. Built by subtracting the mask
+    // shifted AWAY from the light, so the highlight lands on the sunward side and
+    // never appears as a per-tile ring or a stray wedge.
+    resetSc();
+    sc.x.drawImage(topMask.c, 0, 0);
+    sc.x.globalCompositeOperation = 'destination-out';
+    sc.x.drawImage(topMask.c, -LIGHT.x * 3.4, -LIGHT.y * 3.4);
+    tintSc('rgba(240,242,250,1)');
+    x.save(); x.globalAlpha = 0.6;
+    if (canFilter) x.filter = 'blur(1.1px)';
+    x.drawImage(sc.c, 0, 0); x.filter = 'none'; x.restore();
+    // matching soft core shadow on the shaded edge — a wide inner bevel is what
+    // gives the whole formation its volume now that no tile is shaded on its own
+    resetSc();
+    sc.x.drawImage(topMask.c, 0, 0);
+    sc.x.globalCompositeOperation = 'destination-out';
+    sc.x.drawImage(topMask.c, LIGHT.x * 9, LIGHT.y * 9);
+    tintSc('rgba(12,12,20,1)');
+    x.save(); x.globalAlpha = 0.42;
+    if (canFilter) x.filter = 'blur(4px)';
+    x.drawImage(sc.c, 0, 0); x.filter = 'none'; x.restore();
+    // release the mask/scratch backing stores immediately instead of leaving
+    // ~25MB of world-sized canvases for the GC to reclaim mid-first-frame
+    for (const cv of [faceMask.c, topMask.c, sc.c, faceLo.c, lo.c]) { cv.width = 1; cv.height = 1; }
   }
 
   // large-scale light variation + vignette
@@ -1077,28 +1246,157 @@ function drawTowerTurret(x, kind, lvl) {
 /* ============================================================
    DECOR + PORTAL SPRITES
    ============================================================ */
-function bakeTree() {
-  const { c, x } = makeCanvas(84, 96); x.translate(42, 82);
-  capsule(x, 0, 0, -2, -26, 5, 4, [82, 58, 36]);
-  for (let i = 0; i < 4; i++) {
-    const y = -28 - i * 12, r = 26 - i * 5;
-    for (let k = 0; k < 7; k++) {
-      const a = k / 7 * TAU + i;
-      ell(x, Math.cos(a) * r * 0.6, y + Math.sin(a) * r * 0.25, r * 0.45, r * 0.35, shade([44, 82, 44], 0.8 + (ART() * 0.6)));
+/* Decor used to be exactly ONE tree canvas and ONE rock canvas re-blitted 70
+   times, which reads as wallpaper. Both are now families of hand-tuned variants
+   baked once at load; placeDecor() picks an index (and a mirror flag) per item
+   from its own seeded RNG so every client still renders an identical field.
+
+   NOTE on the post-process helpers: outlineSprite/rimLight/lightPass all fetch
+   the sprite's own 2d context, which still carries whatever translate() the
+   drawing code left on it — lightPass' fillRect(0,0,w,h) therefore landed at
+   (tx,ty) and painted a hard-edged pale rectangle over the lower-right of every
+   tree and rock (the stray "wedges"). Each baker resets the transform before
+   post-processing. */
+const DECOR_BASE = 0.86;  // fraction of canvas height that is the sprite's ground contact
+
+/* thin highlight along the LIGHT-facing edge of a silhouette. (The generic
+   rimLight() offsets the subtraction toward the light, which lands the band on
+   the shaded side — fine for the stylised unit art, wrong for a rock.) */
+function edgeLight(cv, d, color, alpha) {
+  const sil = silhouette(cv, color);
+  const { c, x } = makeCanvas(cv.width, cv.height);
+  x.drawImage(sil, 0, 0);
+  x.globalCompositeOperation = 'destination-out';
+  x.drawImage(sil, -LIGHT.x * d, -LIGHT.y * d);
+  const o = cv.getContext('2d');
+  o.save(); o.setTransform(1, 0, 0, 1, 0, 0);
+  o.globalCompositeOperation = 'source-atop'; o.globalAlpha = alpha;
+  o.drawImage(c, 0, 0); o.restore();
+}
+
+/* trunk lean, height, canopy shape, clump layout and hue all vary; two are cool
+   blue-greens, two warm olive/yellow-greens, one is a bare dead trunk and one a
+   small sapling. */
+const TREES = [
+  { w: 84, h: 110, style: 'conifer', col: [44, 82, 44], bark: [82, 58, 36], th: 28, lean: -2, layers: 5, r0: 25, dr: 4.2, dy: 10, tw: 5 },
+  { w: 90, h: 92, style: 'broad', col: [66, 104, 46], bark: [90, 66, 40], th: 26, lean: 6, clumps: 5, r0: 24, tw: 5.6 },
+  { w: 72, h: 122, style: 'conifer', col: [28, 66, 58], bark: [64, 52, 42], th: 34, lean: 3, layers: 6, r0: 21, dr: 2.1, dy: 9.5, tw: 4.2 },
+  { w: 76, h: 102, style: 'bare', col: [104, 88, 66], bark: [96, 80, 58], th: 36, lean: -5, tw: 4.6 },
+  { w: 54, h: 62, style: 'broad', col: [108, 138, 58], bark: [96, 72, 44], th: 15, lean: 3, clumps: 3, r0: 14, tw: 3.2 },
+  { w: 98, h: 90, style: 'broad', col: [88, 100, 40], bark: [78, 60, 38], th: 21, lean: -7, clumps: 6, r0: 27, tw: 6.6 },
+  { w: 82, h: 114, style: 'conifer', col: [56, 94, 40], bark: [96, 70, 40], th: 30, lean: 5, layers: 5, r0: 23, dr: 3.4, dy: 10.5, tw: 4.8 },
+  { w: 64, h: 94, style: 'bare', col: [110, 96, 74], bark: [108, 92, 66], th: 30, lean: 7, tw: 3.4 }
+];
+/* weighted pick list — bare/dead trees are striking, so they stay rare instead of
+   coming up 1-in-4 and clustering into a dead grove. */
+const TREE_PICK = [0, 0, 1, 1, 2, 2, 4, 4, 5, 5, 6, 6, 3, 7];
+const ROCK_PICK = [0, 1, 1, 2, 3, 3, 4, 5, 6, 6, 7];
+function bakeTree(v) {
+  const T = TREES[v % TREES.length];
+  const Rr = mulberry32(0xBEE5 + v * 7919);
+  const { c, x } = makeCanvas(T.w, T.h);
+  x.translate(T.w / 2, T.h * DECOR_BASE);
+  const topX = T.lean, topY = -T.th;
+  // root flare + trunk
+  ell(x, 0, -1, T.tw * 1.75, T.tw * 0.72, shade(T.bark, 0.72));
+  capsule(x, 0, 0, topX, topY, T.tw, T.tw * 0.7, T.bark);
+  if (T.style === 'bare') {
+    for (let i = 0; i < 6; i++) {
+      const t = 0.3 + i * 0.13, sgn = i % 2 ? 1 : -1;
+      const bx = topX * t, by = topY * t;
+      const ex = bx + sgn * (9 + Rr() * 15), ey = by - (13 + Rr() * 17);
+      capsule(x, bx, by, ex, ey, T.tw * 0.44, T.tw * 0.18, shade(T.bark, 0.86 + Rr() * 0.3));
+      capsule(x, ex, ey, ex + sgn * (3 + Rr() * 9), ey - (5 + Rr() * 11), T.tw * 0.18, T.tw * 0.07, shade(T.bark, 0.8));
+    }
+  } else if (T.style === 'conifer') {
+    for (let i = 0; i < T.layers; i++) {
+      const y = topY - 3 - i * T.dy, r = Math.max(T.r0 * 0.46, T.r0 - i * T.dr);
+      const n = 6 + (Rr() * 3 | 0);
+      for (let k = 0; k < n; k++) {
+        const a = k / n * TAU + i * 1.27 + Rr() * 0.5;
+        const lit = 0.82 - (Math.cos(a) * LIGHT.x + Math.sin(a) * LIGHT.y) * 0.26;
+        ell(x, topX * 0.5 + Math.cos(a) * r * 0.6, y + Math.sin(a) * r * 0.26,
+          r * (0.40 + Rr() * 0.14), r * (0.30 + Rr() * 0.12), shade(T.col, lit + Rr() * 0.34), 0, 1.3, 0.6);
+      }
+    }
+  } else {
+    // irregular broadleaf crown: many small overlapping clumps in two shells so
+    // the silhouette stays lumpy instead of collapsing into one smooth lollipop
+    const ccx = topX * 1.15, ccy = topY - T.r0 * 0.46;
+    for (let shell = 0; shell < 2; shell++) {
+      const n = T.clumps + shell * 2;
+      for (let i = 0; i < n; i++) {
+        const a = i / n * TAU + shell * 0.7 + Rr() * 0.7;
+        const d = T.r0 * (shell ? 0.30 + Rr() * 0.30 : 0.58 + Rr() * 0.34);
+        const r = T.r0 * (shell ? 0.26 + Rr() * 0.16 : 0.30 + Rr() * 0.18);
+        // upper-left clumps catch the sun, lower-right ones sit in shade
+        const lit = 0.86 - (Math.cos(a) * LIGHT.x + Math.sin(a) * LIGHT.y) * 0.30;
+        ell(x, ccx + Math.cos(a) * d, ccy + Math.sin(a) * d * 0.72, r, r * (0.72 + Rr() * 0.26),
+          shade(T.col, lit + Rr() * 0.24), (Rr() - 0.5) * 0.9, 1.22, 0.62);
+      }
     }
   }
-  outlineSprite(c, 'rgba(8,14,10,0.85)', 2); lightPass(c, 0.3, 0.12);
+  x.setTransform(1, 0, 0, 1, 0, 0);
+  outlineSprite(c, 'rgba(8,14,10,0.85)', 2);
+  edgeLight(c, 1.9, 'rgba(255,248,206,1)', T.style === 'bare' ? 0.26 : 0.28);
+  lightPass(c, 0.3, 0.12);
   return c;
 }
-function bakeRock() {
-  const { c, x } = makeCanvas(64, 56); x.translate(32, 40);
-  for (let i = 0; i < 4; i++) {
-    const pts = []; const n = 6;
-    const r = 16 - i * 2.4;
-    for (let k = 0; k < n; k++) { const a = k / n * TAU; pts.push([Math.cos(a) * r * (0.7 + ART() * 0.6), Math.sin(a) * r * (0.5 + ART() * 0.5)]); }
-    poly(x, pts, shade([96, 92, 100], 0.75 + i * 0.14), 0, (ART() - 0.5) * 10, -i * 5);
+
+/* boulder count, angularity, stacking, moss coverage and crack density vary. */
+const ROCKS = [
+  { w: 64, h: 58, n: 3, ang: 6, spread: 11, rise: 6, moss: 0.5, crack: 2, col: [96, 92, 100], jag: 0.55 },
+  { w: 76, h: 54, n: 5, ang: 7, spread: 18, rise: 3, moss: 0.15, crack: 1, col: [106, 98, 88], jag: 0.42 },
+  { w: 50, h: 68, n: 3, ang: 5, spread: 6, rise: 13, moss: 0.7, crack: 3, col: [88, 88, 100], jag: 0.7 },
+  { w: 82, h: 58, n: 4, ang: 8, spread: 19, rise: 5, moss: 0.0, crack: 2, col: [114, 106, 96], jag: 0.30 },
+  { w: 42, h: 42, n: 2, ang: 6, spread: 7, rise: 4, moss: 0.35, crack: 0, col: [92, 94, 104], jag: 0.6 },
+  { w: 70, h: 64, n: 2, ang: 9, spread: 8, rise: 8, moss: 0.75, crack: 4, col: [84, 88, 84], jag: 0.22 },
+  { w: 58, h: 50, n: 4, ang: 9, spread: 12, rise: 4, moss: 0.6, crack: 1, col: [100, 88, 80], jag: 0.24 },
+  { w: 64, h: 74, n: 2, ang: 5, spread: 5, rise: 17, moss: 0.1, crack: 3, col: [122, 114, 104], jag: 0.66 }
+];
+function bakeRock(v) {
+  const T = ROCKS[v % ROCKS.length];
+  const Rr = mulberry32(0x20CC + v * 6151);
+  const { c, x } = makeCanvas(T.w, T.h);
+  x.translate(T.w / 2, T.h * DECOR_BASE);
+  const items = [];
+  for (let i = 0; i < T.n; i++) items.push({
+    ox: (Rr() - 0.5) * T.spread * 2, oy: -Rr() * T.rise,
+    r: T.w * 0.28 * (0.5 + Rr() * 0.72), rot: (Rr() - 0.5) * 1.1, k: Rr()
+  });
+  items.sort((a, b) => a.oy - b.oy);   // back (higher) boulders first
+  for (const it of items) {
+    const pts = [];
+    for (let k = 0; k < T.ang; k++) {
+      const a = k / T.ang * TAU;
+      pts.push([Math.cos(a) * it.r * (1 - T.jag * 0.5 + Rr() * T.jag), Math.sin(a) * it.r * (0.5 + Rr() * 0.42)]);
+    }
+    const cx0 = it.ox, cy0 = it.oy - it.r * 0.30;
+    poly(x, pts, shade(T.col, 0.66 + it.k * 0.62), it.rot, cx0, cy0);
+    x.save(); x.translate(cx0, cy0); x.rotate(it.rot);
+    x.beginPath(); pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath();
+    x.clip();
+    // cracks
+    x.lineCap = 'round';
+    for (let k = 0; k < T.crack; k++) {
+      let px = (Rr() - 0.5) * it.r, py = (Rr() - 0.5) * it.r * 0.7, a = Rr() * TAU;
+      x.strokeStyle = 'rgba(20,20,26,0.42)'; x.lineWidth = 0.9 + Rr() * 0.7;
+      x.beginPath(); x.moveTo(px, py);
+      for (let s = 0; s < 3; s++) { a += (Rr() - 0.5) * 1.5; px += Math.cos(a) * it.r * 0.34; py += Math.sin(a) * it.r * 0.26; x.lineTo(px, py); }
+      x.stroke();
+    }
+    // moss
+    if (T.moss > 0) for (let k = 0; k < 4; k++) {
+      if (Rr() > T.moss) continue;
+      x.fillStyle = `rgba(${68 + Rr() * 40 | 0},${108 + Rr() * 40 | 0},${48 + Rr() * 30 | 0},${0.34 + Rr() * 0.3})`;
+      x.beginPath(); x.ellipse((Rr() - 0.5) * it.r * 1.5, -it.r * (0.1 + Rr() * 0.4), it.r * (0.16 + Rr() * 0.3), it.r * (0.08 + Rr() * 0.16), Rr() * 3, 0, TAU); x.fill();
+    }
+    x.restore();
   }
-  outlineSprite(c, 'rgba(8,10,14,0.85)', 2); lightPass(c, 0.3, 0.14);
+  x.setTransform(1, 0, 0, 1, 0, 0);
+  outlineSprite(c, 'rgba(8,10,14,0.85)', 2);
+  edgeLight(c, 2.4, 'rgba(240,244,255,1)', 0.5);
+  lightPass(c, 0.26, 0.14);
   return c;
 }
 /* ============================================================
@@ -1944,7 +2242,7 @@ const R = {
   cv: null, x: null, W: 0, H: 0, dpr: 1,
   glow: null, gx: null, lightCv: null, lx: null,
   cam: { x: WORLD_W / 2, y: WORLD_H / 2, z: 1, tz: 1 },
-  sprites: { units: {}, towers: {}, tree: null, rock: null },
+  sprites: { units: {}, towers: {}, trees: [], rocks: [] },
   decor: [], time: 0, hud: { rects: [] }, hover: null,
   init(canvas) {
     this.cv = canvas; this.x = canvas.getContext('2d', { alpha: false });
@@ -1993,9 +2291,25 @@ const R = {
 function placeDecor() {
   R.decor = [];
   const Rr = mulberry32(4242);
+  // last two variants placed of each kind — a redraw whenever the pick repeats one
+  // of them stops neighbouring cells (this loop walks row-major) from getting the
+  // same sprite twice in a row, which is what read as wallpaper before.
+  const recent = { tree: [-1, -1], rock: [-1, -1] };
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
     if (G.grid[idxOf(gx, gy)] !== 2) continue;
-    if (Rr() < 0.30) R.decor.push({ t: Rr() < 0.55 ? 'tree' : 'rock', x: gx * TILE + TILE / 2 + (Rr() - 0.5) * 12, y: gy * TILE + TILE * 0.8, s: 0.7 + Rr() * 0.5 });
+    if (Rr() < 0.30) {
+      const t = Rr() < 0.55 ? 'tree' : 'rock';
+      // variant index + mirror flag come from the same seeded stream, so the
+      // scatter stays bit-identical across clients
+      const pick = t === 'tree' ? TREE_PICK : ROCK_PICK;
+      let v = pick[(Rr() * pick.length) | 0];
+      for (let k = 0; k < 4 && (v === recent[t][0] || v === recent[t][1]); k++) v = pick[(Rr() * pick.length) | 0];
+      recent[t][1] = recent[t][0]; recent[t][0] = v;
+      R.decor.push({
+        t, x: gx * TILE + TILE / 2 + (Rr() - 0.5) * 12, y: gy * TILE + TILE * 0.8,
+        s: 0.7 + Rr() * 0.5, v, mir: Rr() < 0.5
+      });
+    }
   }
   R.decor.sort((a, b) => a.y - b.y);
 }
@@ -2143,8 +2457,12 @@ function shadowEll(x, cx, cy, rx, ry) {
    adds a proper elongated shadow stretching away from LIGHT (length scaled to the
    sprite's own height, same as a real object would throw one) plus a tight contact
    AO right at the base, consistent with how creep/tower shadows already work. */
+function decorSprite(d) {
+  const arr = d.t === 'tree' ? R.sprites.trees : R.sprites.rocks;
+  return (arr && arr.length) ? arr[d.v % arr.length] : null;
+}
 function drawDecorShadow(x, d, sox, soy) {
-  const spr = d.t === 'tree' ? R.sprites.tree : R.sprites.rock;
+  const spr = decorSprite(d);
   const footW = (spr ? spr.width : 60) * d.s, footH = (spr ? spr.height : 60) * d.s;
   const len = footH * (d.t === 'tree' ? 0.90 : 0.52);
   const baseX = d.x, baseY = d.y - 2;
@@ -2296,9 +2614,15 @@ function drawBuildOverlay(x) {
   x.restore();
 }
 function drawDecor(x, d) {
-  const spr = d.t === 'tree' ? R.sprites.tree : R.sprites.rock;
+  const spr = decorSprite(d);
   if (!spr) return;
-  x.drawImage(spr, d.x - spr.width * d.s / 2, d.y - spr.height * d.s * 0.86, spr.width * d.s, spr.height * d.s);
+  const w = spr.width * d.s, h = spr.height * d.s, py = d.y - h * DECOR_BASE;
+  if (d.mir) {
+    x.save(); x.translate(d.x, 0); x.scale(-1, 1);
+    x.drawImage(spr, -w / 2, py, w, h); x.restore();
+  } else {
+    x.drawImage(spr, d.x - w / 2, py, w, h);
+  }
 }
 function drawTower(x, t) {
   const spr = R.sprites.towers[t.kind + t.lvl]; if (!spr) return;
@@ -3118,7 +3442,10 @@ function bootstrap() {
   const jobs = [];
   for (const k in CREEPS) jobs.push({ label: CREEPS[k].name, fn: () => { R.sprites.units[k] = bakeUnit(CREEPS[k]); } });
   for (const k in TOWERS) for (let l = 0; l < 3; l++) jobs.push({ label: TOWERS[k].names[l], fn: () => { R.sprites.towers[k + l] = bakeTower(k, l); } });
-  jobs.push({ label: 'Ötüken ormanı', fn: () => { R.sprites.tree = bakeTree(); R.sprites.rock = bakeRock(); placeDecor(); } });
+  // decor variants are tiny (~10ms for all twelve) — bake them in two jobs rather
+  // than twelve so the loader does not spend a frame apiece on them
+  jobs.push({ label: 'Ötüken ormanı', fn: () => { for (let v = 0; v < TREES.length; v++) R.sprites.trees[v] = bakeTree(v); } });
+  jobs.push({ label: 'Kayalıklar', fn: () => { for (let v = 0; v < ROCKS.length; v++) R.sprites.rocks[v] = bakeRock(v); placeDecor(); } });
   jobs.push({ label: 'Bozkır dokusu', fn: () => bakeTerrain(G.grid) });
   let i = 0;
   const bar = document.getElementById('bar'), lbl = document.getElementById('bootLabel');
