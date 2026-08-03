@@ -171,6 +171,10 @@ const dist2 = (x1, y1, x2, y2) => { const dx = x2 - x1, dy = y2 - y1; return dx 
 const TAU = Math.PI * 2;
 function angLerp(a, b, t) { let d = ((b - a + Math.PI * 3) % TAU) - Math.PI; return a + d * t; }
 const easeOut = t => 1 - Math.pow(1 - t, 3);
+/* global key-light direction — shared by terrain bump shading, sprite rim-light/
+   lightPass and directional contact shadows so every baked surface agrees on
+   where the sun sits (upper-left, steppe-dusk angle). */
+const LIGHT = { x: -0.58, y: -0.80 };
 
 /* ---------- value noise / fbm ---------- */
 const NP = new Uint8Array(512);
@@ -426,21 +430,51 @@ function bakeTerrain(grid) {
   const img = x.createImageData(WORLD_W, WORLD_H);
   const D = img.data;
   const GRASS_D = [30, 54, 28], GRASS_L = [124, 158, 68], DRY = [146, 132, 70], MOSS = [44, 88, 44];
+  const BUMP_E = 4; // finite-difference step for the fake normal-map pass
   for (let py = 0; py < WORLD_H; py++) {
     for (let px = 0; px < WORLD_W; px++) {
       const nx = px / 96, ny = py / 96;
       let n = fbm(nx, ny, 5) * 0.5 + 0.5;
       const d = fbm(nx * 3.1 + 40, ny * 3.1 - 20, 3) * 0.5 + 0.5;
       const micro = fbm(px / 7, py / 7, 2) * 0.5 + 0.5;
+      // low-frequency undulation, sampled twice more (offset by BUMP_E px) to fake a
+      // normal map: the gradient between the three samples tells us which way the
+      // "ground" leans relative to LIGHT, so ridges catch a highlight and hollows
+      // pool with shadow — cheap multi-octave bump without any real geometry.
+      const macro = fbm(nx / 2.4 + 60, ny / 2.4 - 35, 3) * 0.5 + 0.5;
+      const macroX = fbm((px + BUMP_E) / 230 + 60, py / 230 - 35, 3) * 0.5 + 0.5;
+      const macroY = fbm(px / 230 + 60, (py + BUMP_E) / 230 - 35, 3) * 0.5 + 0.5;
+      const slope = (macroX - macro) * -LIGHT.x + (macroY - macro) * -LIGHT.y;
+      const bump = clamp(1 + slope * 16, 0.6, 1.5);
       let col = mixHex(GRASS_D, GRASS_L, clamp(n * 1.25 - 0.1, 0, 1));
       col = mixHex(col, MOSS, clamp((0.6 - n) * 1.4, 0, 1) * 0.5);
       col = mixHex(col, DRY, clamp((d - 0.62) * 3.2, 0, 1) * 0.55);
-      const sh = 0.82 + micro * 0.36;
+      col = mixHex(col, shade(col, 0.6), clamp((0.32 - macro) * 1.6, 0, 1) * 0.4); // undulation shadow pools
+      const sh = (0.82 + micro * 0.36) * bump;
       const i = (py * WORLD_W + px) * 4;
       D[i] = col[0] * sh; D[i + 1] = col[1] * sh; D[i + 2] = col[2] * sh; D[i + 3] = 255;
     }
   }
   x.putImageData(img, 0, 0);
+
+  // cracked earth veins in the driest patches — thin dark fissures with a pale rim
+  for (let i = 0; i < 46; i++) {
+    const cx0 = ART() * WORLD_W, cy0 = ART() * WORLD_H;
+    if ((fbm(cx0 / 96 * 3.1 + 40, cy0 / 96 * 3.1 - 20, 3) * 0.5 + 0.5) < 0.66) continue;
+    let px2 = cx0, py2 = cy0, a2 = ART() * TAU;
+    x.save(); x.lineCap = 'round';
+    for (let k = 0; k < 5; k++) {
+      const len = 6 + ART() * 14;
+      a2 += (ART() - 0.5) * 1.6;
+      const nx2 = px2 + Math.cos(a2) * len, ny2 = py2 + Math.sin(a2) * len;
+      x.strokeStyle = 'rgba(224,206,168,0.20)'; x.lineWidth = 1.6;
+      x.beginPath(); x.moveTo(px2 + 0.6, py2 + 0.6); x.lineTo(nx2 + 0.6, ny2 + 0.6); x.stroke();
+      x.strokeStyle = 'rgba(38,28,18,0.34)'; x.lineWidth = 1.1;
+      x.beginPath(); x.moveTo(px2, py2); x.lineTo(nx2, ny2); x.stroke();
+      px2 = nx2; py2 = ny2;
+    }
+    x.restore();
+  }
 
   // soil patches with soft irregular edges
   for (let i = 0; i < 90; i++) {
@@ -578,8 +612,10 @@ function bakeUnit(def) {
       x.translate(S / 2, S * 0.62);
       drawCreature(x, def, d, f);
       outlineSprite(c, 'rgba(9,6,12,0.95)', def.big ? 2.0 : 1.5);
-      rimLight(c, -1.1, -1.5, 'rgba(255,246,214,1)', 0.55);
-      lightPass(c, 0.20, 0.16, def.tint || null);
+      const armorTier = def.armor || 0;
+      rimLight(c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.44 + Math.min(0.3, armorTier * 0.07));
+      if (armorTier >= 3) rimLight(c, LIGHT.x * 3.1, LIGHT.y * 3.1, 'rgba(206,224,255,0.9)', 0.28); // cold steel sheen — heavy/fortress read as armored at a glance
+      lightPass(c, 0.20 + armorTier * 0.015, 0.16, def.tint || null);
       row.push(c);
     }
     sheets.push(row);
@@ -731,7 +767,7 @@ function drawCreature(x, def, d, f) {
   x.restore();
 }
 function drawWings(x, def, ph, y, fx, fy, behind) {
-  const s = def.s, flap = Math.sin(ph) * 0.62;
+  const s = def.s, flap = Math.sin(ph) * 0.5 + Math.sin(ph * 2 + 0.4) * 0.16; // fast downstroke, slower recovery
   const P = def.pal, side = Math.abs(fx);
   for (const sgn of [-1, 1]) {
     x.save();
@@ -804,11 +840,11 @@ function bakeTower(kind, lvl) {
   base.x.translate(S / 2, S * 0.66); turret.x.translate(S / 2, S / 2);
   drawTowerBase(base.x, kind, lvl);
   outlineSprite(base.c, 'rgba(9,6,12,0.95)', 1.7);
-  rimLight(base.c, -1.2, -1.6, 'rgba(255,244,208,1)', 0.5);
+  rimLight(base.c, LIGHT.x * 2.1, LIGHT.y * 2.1, 'rgba(255,244,208,1)', 0.5 + lvl * 0.05);
   lightPass(base.c, 0.16, 0.14);
   drawTowerTurret(turret.x, kind, lvl);
   outlineSprite(turret.c, 'rgba(9,6,12,0.95)', 1.6);
-  rimLight(turret.c, -1.1, -1.4, 'rgba(255,246,214,1)', 0.55);
+  rimLight(turret.c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.55 + lvl * 0.05);
   lightPass(turret.c, 0.14, 0.10);
   return { base: base.c, turret: turret.c, S, pivot: TOWER_PIVOT(lvl) };
 }
@@ -1614,9 +1650,17 @@ function castSpell(idx, x, y, owner) {
 const FX = {
   parts: [], lights: [], texts: [], arcs: [], rings: [],
   decal: null, decalX: null, shake: 0, shakeA: 0, flash: 0, flashCol: '255,60,40',
-  blizzard: 0,
+  blizzard: 0, dust: [],
   init() {
     const d = makeCanvas(WORLD_W, WORLD_H); this.decal = d.c; this.decalX = d.x;
+    // ambient dust motes — a small fixed pool, drifting forever, never touching
+    // the combat-particle budget/cap. Pure atmosphere.
+    for (let i = 0; i < 46; i++) {
+      this.dust.push({
+        x: VFX() * WORLD_W, y: VFX() * WORLD_H, r: 0.6 + VFX() * 1.5,
+        vx: (VFX() - 0.5) * 5, vy: -3 - VFX() * 7, ph: VFX() * TAU, a: 0.08 + VFX() * 0.16
+      });
+    }
   },
   clear() { this.parts.length = 0; this.lights.length = 0; this.texts.length = 0; this.arcs.length = 0; this.rings.length = 0; this.decalX.clearRect(0, 0, WORLD_W, WORLD_H); },
   p(o) {
@@ -1646,10 +1690,26 @@ const FX = {
     for (let i = this.texts.length - 1; i >= 0; i--) { const t = this.texts[i]; t.life -= dt; t.y += t.vy * dt; t.vy *= 0.92; if (t.life <= 0) this.texts.splice(i, 1); }
     for (let i = this.arcs.length - 1; i >= 0; i--) { const a = this.arcs[i]; a.life -= dt; if (a.life <= 0) this.arcs.splice(i, 1); }
     for (let i = this.rings.length - 1; i >= 0; i--) { const r = this.rings[i]; r.life -= dt; if (r.life <= 0) this.rings.splice(i, 1); }
-    this.shake *= Math.pow(0.86, dt * 60); if (this.shake < 0.1) this.shake = 0;
+    // punchier decay: fast initial snap that eases out, instead of a flat exponential
+    this.shake -= this.shake * (0.20 + this.shake * 0.01) * dt * 60; if (this.shake < 0.1) this.shake = 0;
     this.shakeA += dt * 60;
     this.flash *= Math.pow(0.88, dt * 60);
     if (this.blizzard > 0) this.blizzard -= dt;
+    for (const d of this.dust) {
+      d.x += d.vx * dt; d.y += d.vy * dt; d.ph += dt;
+      if (d.x < -20) d.x = WORLD_W + 20; else if (d.x > WORLD_W + 20) d.x = -20;
+      if (d.y < -20) d.y = WORLD_H + 20;
+    }
+  },
+  drawDust(x) {
+    x.save();
+    for (const d of this.dust) {
+      const tw = 0.55 + Math.sin(d.ph * 1.4) * 0.45;
+      x.globalAlpha = d.a * tw;
+      x.fillStyle = 'rgba(255,238,202,1)';
+      x.beginPath(); x.arc(d.x, d.y, d.r, 0, TAU); x.fill();
+    }
+    x.restore();
   },
 
   /* ---------- authored effect recipes ---------- */
@@ -1761,7 +1821,14 @@ const FX = {
     this.addShake(boss ? 16 : 7);
     this.ring(x, y, 10, 120, '255,70,50', 0.5, 6);
   },
-  gold(x, y, amt) { this.text(x, y, '+' + amt, '#ffd76a', 13); },
+  gold(x, y, amt) {
+    this.text(x, y, '+' + amt, '#ffd76a', 13);
+    const n = clamp(3 + Math.round(amt / 30), 3, 9);
+    for (let i = 0; i < n; i++) {
+      const a = VFX() * TAU, sp = 20 + VFX() * 50;
+      this.p({ type: 'spark', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 30, z: 2, vz: 20 + VFX() * 30, gz: 140, life: 0.35 + VFX() * 0.3, size: 1.2 + VFX() * 1.6, col: '255,214,110', add: true, drag: 0.9 });
+    }
+  },
   scorch(x, y, r) {
     const dx = this.decalX; dx.save();
     const g = dx.createRadialGradient(x, y, 0, x, y, r);
@@ -1878,6 +1945,8 @@ function render(dtReal, alpha) {
 
   // 1. terrain
   if (Terrain.cv) x.drawImage(Terrain.cv, 0, 0);
+  // 1b. drifting cloud shadows — slow soft blobs, multiply-blended, hint at a sky above
+  drawCloudShadows(x, R.time);
   // 2. decals
   x.drawImage(FX.decal, 0, 0);
   // 3. portals
@@ -1897,12 +1966,14 @@ function render(dtReal, alpha) {
   for (const d of R.decor) drawables.push({ y: d.y, kind: 'decor', o: d });
   drawables.sort((a, b) => a.y - b.y);
 
-  // shadows first (flat pass, cheap AO)
+  // shadows first (flat pass, cheap AO) — cast away from LIGHT so every unit/
+  // tower/tree grounds itself under the same steppe sun.
+  const SOX = -LIGHT.x * 9, SOY = -LIGHT.y * 5.5;
   x.save(); x.globalAlpha = 0.42;
   for (const d of drawables) {
-    if (d.kind === 'creep') { const cr = d.o; const sc = cr.air ? 0.6 : 1; shadowEll(x, cr.x, cr.y + (cr.air ? 10 : 2), cr.r * 1.5 * sc, cr.r * 0.72 * sc); }
-    else if (d.kind === 'tower') shadowEll(x, d.o.x + 4, d.o.y + 8, 20, 11);
-    else if (d.kind === 'decor') shadowEll(x, d.o.x + 4, d.o.y - 2, 16 * d.o.s, 8 * d.o.s);
+    if (d.kind === 'creep') { const cr = d.o; const sc = cr.air ? 0.6 : 1; const lift = cr.air ? clamp(1 - cr.z / 60, 0.28, 1) : 1; shadowEll(x, cr.x + SOX * sc, cr.y + (cr.air ? 10 : 2) + SOY * sc, cr.r * 1.5 * sc, cr.r * 0.72 * sc * lift); }
+    else if (d.kind === 'tower') shadowEll(x, d.o.x + SOX, d.o.y + 8 + SOY, 20, 11);
+    else if (d.kind === 'decor') shadowEll(x, d.o.x + SOX * d.o.s, d.o.y - 2 + SOY * d.o.s, 16 * d.o.s, 8 * d.o.s);
   }
   x.restore();
 
@@ -1916,6 +1987,7 @@ function render(dtReal, alpha) {
   for (const p of G.projs) drawProjectile(x, R.gx, p);
 
   // 8. particles
+  FX.drawDust(x);
   drawParticles(x, R.gx);
   drawArcsRings(x, R.gx);
 
@@ -1967,6 +2039,12 @@ function render(dtReal, alpha) {
 
   // damage flash
   if (FX.flash > 0.003) { x.save(); x.globalCompositeOperation = 'lighter'; x.fillStyle = `rgba(${FX.flashCol},${FX.flash})`; x.fillRect(0, 0, W, H); x.restore(); }
+  // atmospheric haze — a faint cool wash near the top of the view standing in for
+  // distant air, plus a warm bounce near the bottom where the ground is closest
+  const haze = x.createLinearGradient(0, 0, 0, H);
+  haze.addColorStop(0, 'rgba(111,216,230,0.10)'); haze.addColorStop(0.35, 'rgba(111,216,230,0)');
+  haze.addColorStop(0.85, 'rgba(0,0,0,0)'); haze.addColorStop(1, 'rgba(214,172,92,0.05)');
+  x.fillStyle = haze; x.fillRect(0, 0, W, H);
   // vignette
   const vg = x.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.max(W, H) * 0.72);
   vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.55)');
@@ -1988,6 +2066,27 @@ function drawRange(x, cx, cy, r, col) {
   const g = x.createRadialGradient(cx, cy, r * 0.6, cx, cy, r);
   g.addColorStop(0, 'rgba(120,200,255,0)'); g.addColorStop(1, 'rgba(120,200,255,0.10)');
   x.fillStyle = g; x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fill();
+  x.restore();
+}
+/* slow-drifting soft cloud shadows over the steppe — cheap stand-in for a sky
+   layer given the top-down camera; ties the battlefield to weather/time-of-day
+   without any extra geometry. */
+const CLOUDS = [
+  { x: 0.15, y: 0.30, r: 0.34, sp: 0.010, ph: 0.0 },
+  { x: 0.62, y: 0.55, r: 0.46, sp: 0.007, ph: 2.1 },
+  { x: 0.85, y: 0.20, r: 0.30, sp: 0.013, ph: 4.4 },
+  { x: 0.38, y: 0.78, r: 0.40, sp: 0.009, ph: 1.2 }
+];
+function drawCloudShadows(x, t) {
+  x.save(); x.globalCompositeOperation = 'multiply';
+  for (const c of CLOUDS) {
+    const cx = ((c.x + t * c.sp) % 1.4 - 0.2) * WORLD_W;
+    const cy = (c.y + Math.sin(t * 0.05 + c.ph) * 0.05) * WORLD_H;
+    const r = c.r * WORLD_W * 0.5;
+    const g = x.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, 'rgba(150,158,150,0.90)'); g.addColorStop(0.6, 'rgba(170,176,168,0.96)'); g.addColorStop(1, 'rgba(255,255,255,1)');
+    x.fillStyle = g; x.beginPath(); x.ellipse(cx, cy, r, r * 0.62, 0, 0, TAU); x.fill();
+  }
   x.restore();
 }
 function drawPortals(x) {
@@ -2131,7 +2230,11 @@ function drawCreep(x, c) {
   const def = CREEPS[c.type];
   const sheet = R.sprites.units[c.type]; if (!sheet) return;
   const img = sheet[c.dir][c.frame];
-  const sx = c.x - def.px / 2, sy = c.y - c.z - def.px * 0.62;
+  // idle sway: a tiny breathing bob when a creature is stalled (blocked by the
+  // crowd, or between wave spawns) so the field never looks frozen mid-walk-cycle
+  const spNow = Math.hypot(c.vx, c.vy);
+  const idleY = spNow < 4 && !c.dead ? Math.sin(R.time * 1.7 + c.id * 0.9) * 1.1 : 0;
+  const sx = c.x - def.px / 2, sy = c.y - c.z - def.px * 0.62 + idleY;
   x.save();
   if (c.dead) {
     const t = 1 - c.deathT / 0.75;
@@ -2240,10 +2343,18 @@ function drawParticles(x, gx) {
     } else {
       ctx.globalAlpha = a;
       const s = p.size * (p.type === 'spark' || p.type === 'ember' ? a * 0.6 + 0.4 : 1);
-      ctx.fillStyle = `rgba(${p.col},${a})`;
+      // color-over-life: embers cool from bright yellow-white toward smouldering
+      // ember-red as they age, instead of holding one flat tint for their whole life
+      let colStr = p.col;
+      if (p.type === 'ember') {
+        if (!p.col0) { p.col0 = p.col.split(',').map(Number); p.col1 = [130, 34, 12]; }
+        const cc = mixHex(p.col0, p.col1, 1 - a);
+        colStr = `${cc[0] | 0},${cc[1] | 0},${cc[2] | 0}`;
+      }
+      ctx.fillStyle = `rgba(${colStr},${a})`;
       ctx.beginPath(); ctx.arc(p.x, y, s, 0, TAU); ctx.fill();
       if (p.type === 'spark' || p.type === 'ember') {
-        ctx.globalAlpha = a * 0.5; ctx.strokeStyle = `rgba(${p.col},${a * 0.6})`; ctx.lineWidth = s * 0.8;
+        ctx.globalAlpha = a * 0.5; ctx.strokeStyle = `rgba(${colStr},${a * 0.6})`; ctx.lineWidth = s * 0.8;
         ctx.beginPath(); ctx.moveTo(p.x, y); ctx.lineTo(p.x - p.vx * 0.02, y - p.vy * 0.02); ctx.stroke();
       }
     }
