@@ -555,21 +555,34 @@ function bakeTerrain(grid) {
   const cliffCells = [];
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++)
     if (grid[gy * GW + gx] === 2) cliffCells.push([gx, gy]);
-  const blob = (cx, cy, r, seed, squash, ctx = x, rot = 0) => {
+  /* Angular crag outline. This used to emit a quadratic-smoothed blob, which is
+     exactly why the merged mass read as grey putty: every silhouette edge was a
+     soft bulge. It now emits a straight-edged polygon with UNEVEN angular steps,
+     so a few long flat faces meet at tight, genuinely sharp corners — the union
+     of many of these gives the formation a fractured, crystalline outline. The
+     signature is unchanged so every mask/shadow pass stays in register. */
+  const blobPts = (cx, cy, r, seed, squash, rot = 0) => {
     const Rr = mulberry32(seed);
-    const n = 9; const pts = [];
+    const n = 8 + (Rr() * 3 | 0);
+    const steps = []; let tot = 0;
+    for (let i = 0; i < n; i++) { const s = 0.34 + Rr() * 1.5; steps.push(s); tot += s; }
+    const pts = []; let a = rot;
     for (let i = 0; i < n; i++) {
-      const a = i / n * TAU + rot;
-      const rr = r * (0.82 + Rr() * 0.42);
+      // long faces get pushed out, tight corners pulled in -> real planar reads
+      const flat = steps[i] / (tot / n);
+      const rr = r * (0.70 + Rr() * 0.34 + (flat > 1.25 ? 0.18 : 0));
       pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * (squash || 0.92)]);
+      a += steps[i] / tot * TAU;
     }
+    return pts;
+  };
+  const tracePts = (pts, ctx) => {
     ctx.beginPath();
-    for (let i = 0; i <= n; i++) {
-      const p0 = pts[i % n], p1 = pts[(i + 1) % n];
-      const mx = (p0[0] + p1[0]) / 2, my = (p0[1] + p1[1]) / 2;
-      if (i === 0) ctx.moveTo(mx, my); else ctx.quadraticCurveTo(p0[0], p0[1], mx, my);
-    }
+    for (let i = 0; i < pts.length; i++) i ? ctx.lineTo(pts[i][0], pts[i][1]) : ctx.moveTo(pts[i][0], pts[i][1]);
     ctx.closePath();
+  };
+  const blob = (cx, cy, r, seed, squash, ctx = x, rot = 0) => {
+    tracePts(blobPts(cx, cy, r, seed, squash, rot), ctx);
   };
   if (cliffCells.length) {
     /* per-tile jitter (centre offset, rotation, radius, squash, tonal value) plus
@@ -650,13 +663,15 @@ function bakeTerrain(grid) {
     // nothing lines up with the grid.
     resetSc();
     let gf = sc.x.createLinearGradient(0, 0, WORLD_W * 0.35, WORLD_H);
-    gf.addColorStop(0, 'rgb(64,63,72)'); gf.addColorStop(0.5, 'rgb(44,44,52)'); gf.addColorStop(1, 'rgb(26,26,33)');
+    // harder, darker, slightly warm face: the value gap between this and the cap
+    // below is what makes the formation read as stone rather than clay
+    gf.addColorStop(0, 'rgb(50,47,50)'); gf.addColorStop(0.5, 'rgb(31,29,33)'); gf.addColorStop(1, 'rgb(16,15,19)');
     sc.x.fillStyle = gf; sc.x.fillRect(0, 0, WORLD_W, WORLD_H);
     sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(faceMask.c, 0, 0);
     x.drawImage(sc.c, 0, 0);
     resetSc();
     gf = sc.x.createLinearGradient(0, 0, WORLD_W * 0.4, WORLD_H);
-    gf.addColorStop(0, 'rgb(148,148,154)'); gf.addColorStop(0.45, 'rgb(116,114,122)'); gf.addColorStop(1, 'rgb(84,83,92)');
+    gf.addColorStop(0, 'rgb(178,172,160)'); gf.addColorStop(0.45, 'rgb(134,128,120)'); gf.addColorStop(1, 'rgb(90,86,84)');
     sc.x.fillStyle = gf; sc.x.fillRect(0, 0, WORLD_W, WORLD_H);
     // per-cell tonal wash — soft radial patches, no hard cell boundary anywhere
     for (const r of rocks) {
@@ -668,6 +683,87 @@ function bakeTerrain(grid) {
     }
     sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(topMask.c, 0, 0);
     x.drawImage(sc.c, 0, 0);
+
+    /* ---- (c2) STRATA: horizontal bedding layers across the exposed rock face.
+       Wandering near-horizontal bands, pale on top edge / dark underneath, drawn
+       once across the whole world and then masked to (face MINUS cap). Bedding is
+       the single most legible "this is stone" cue at gameplay zoom. */
+    resetSc();
+    const Rs = mulberry32(0x5747A);
+    sc.x.lineCap = 'butt';
+    for (let sy = -4; sy < WORLD_H; sy += 5 + Rs() * 5) {
+      const amp = 1.4 + Rs() * 3.4, ph = Rs() * TAU, fq = 0.006 + Rs() * 0.012;
+      for (const [col, w, off] of [['rgba(206,199,186,0.30)', 1.1, -1.1], ['rgba(10,9,13,0.46)', 1.5, 0.35]]) {
+        sc.x.strokeStyle = col; sc.x.lineWidth = w; sc.x.beginPath();
+        for (let sx2 = 0; sx2 <= WORLD_W; sx2 += 16) {
+          const yy = sy + off + Math.sin(sx2 * fq + ph) * amp + Math.sin(sx2 * fq * 3.1 + ph * 2) * amp * 0.34;
+          sx2 ? sc.x.lineTo(sx2, yy) : sc.x.moveTo(sx2, yy);
+        }
+        sc.x.stroke();
+      }
+    }
+    sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(faceMask.c, 0, 0);
+    sc.x.globalCompositeOperation = 'destination-out'; sc.x.drawImage(topMask.c, 0, 0);
+    x.save(); x.globalAlpha = 0.72; x.drawImage(sc.c, 0, 0); x.restore();
+
+    /* ---- (c3) the shelf shadow the cap throws onto the face directly beneath it.
+       A crisp dark band hugging the underside of the plateau outline: this is what
+       separates "top plane" from "vertical plane" and kills the putty read. */
+    resetSc();
+    sc.x.drawImage(topMask.c, 0, 5);
+    sc.x.globalCompositeOperation = 'destination-out'; sc.x.drawImage(topMask.c, 0, 0);
+    tintSc('rgba(6,6,10,1)');
+    sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(faceMask.c, 0, 0);
+    x.save(); x.globalAlpha = 0.62; x.drawImage(sc.c, 0, 0); x.restore();
+
+    /* ---- (d1) PLANAR FACETING on the cap. Angular shards, each a FLAT value
+       chosen from its own facing (shard offset direction dotted with LIGHT), with
+       a crisp dark edge on the shaded side and a bright catch on the sunward side.
+       Flat planes meeting at defined edges is what turns a smooth mound into rock. */
+    resetSc();
+    const Rf = mulberry32(0xFACE7);
+    const facetEdges = [];
+    for (const r of rocks) {
+      const nf = 3 + (Rf() * 3 | 0);
+      for (let i = 0; i < nf; i++) {
+        const fa = Rf() * TAU, fd = TILE * (0.12 + Rf() * 0.42);
+        const ux = Math.cos(fa), uy = Math.sin(fa);
+        const fx = r.cx + ux * fd, fy = r.cy - r.lift + uy * fd * 0.72;
+        const fr = TILE * (0.20 + Rf() * 0.30);
+        const m = 3 + (Rf() * 3 | 0);
+        const pts = []; let aa = Rf() * TAU;
+        const st = []; let tt = 0;
+        for (let k = 0; k < m; k++) { const s = 0.4 + Rf() * 1.4; st.push(s); tt += s; }
+        for (let k = 0; k < m; k++) {
+          pts.push([fx + Math.cos(aa) * fr * (0.7 + Rf() * 0.5), fy + Math.sin(aa) * fr * (0.5 + Rf() * 0.5)]);
+          aa += st[k] / tt * TAU;
+        }
+        // flat plane value: facing toward LIGHT = lit plane, away = shadow plane
+        const dot = -(ux * LIGHT.x + uy * LIGHT.y);
+        const v = clamp(0.5 + dot * 0.5 + (Rf() - 0.5) * 0.22, 0, 1);
+        const lum = 26 + v * 214 | 0;
+        sc.x.globalAlpha = 0.34 + Math.abs(v - 0.5) * 0.5;
+        sc.x.fillStyle = `rgb(${lum},${(lum * 0.97) | 0},${(lum * 0.94 + 6) | 0})`;
+        tracePts(pts, sc.x); sc.x.fill();
+        sc.x.globalAlpha = 1;
+        facetEdges.push(pts);
+      }
+    }
+    // defined edges between the planes — dark seam offset into shadow, pale catch
+    // offset into the sun. Two passes so the stroke colour is only set twice.
+    for (const [col, w, ox2, oy2] of [['rgba(8,8,12,0.55)', 1.3, LIGHT.x * 1.0, LIGHT.y * 1.0], ['rgba(240,238,230,0.34)', 1.0, -LIGHT.x * 1.1, -LIGHT.y * 1.1]]) {
+      sc.x.strokeStyle = col; sc.x.lineWidth = w; sc.x.lineJoin = 'miter';
+      sc.x.save(); sc.x.translate(ox2, oy2);
+      sc.x.beginPath();
+      for (const pts of facetEdges) {
+        for (let i = 0; i < pts.length; i++) i ? sc.x.lineTo(pts[i][0], pts[i][1]) : sc.x.moveTo(pts[i][0], pts[i][1]);
+        sc.x.closePath();
+      }
+      sc.x.stroke(); sc.x.restore();
+    }
+    sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(topMask.c, 0, 0);
+    x.save(); x.globalAlpha = 0.62; x.drawImage(sc.c, 0, 0); x.restore();
+
     // (d2) boulders sitting on the cap — only some cells get one, at wildly
     // varying size, so the macro forms never repeat cell to cell
     const boulders = [];
@@ -691,18 +787,58 @@ function bakeTerrain(grid) {
     if (canFilter) sc.x.filter = 'blur(3px)';
     sc.x.drawImage(lo.c, 0, 0, WORLD_W, WORLD_H);
     sc.x.filter = 'none';
-    tintSc('rgba(20,20,28,1)');
+    tintSc('rgba(14,14,20,1)');
     sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(topMask.c, 0, 0);
-    x.save(); x.globalAlpha = 0.5; x.drawImage(sc.c, 0, 0); x.restore();
+    x.save(); x.globalAlpha = 0.66; x.drawImage(sc.c, 0, 0); x.restore();
+    /* Boulders used to be one gradient-filled outline — a paper cutout. Each is
+       now built from three explicit planes: a bright TOP plane (a congruent copy
+       of the same seeded outline, shrunk and pushed sunward/up), a mid-tone SIDE
+       plane, and a dark UNDERSIDE band, with a crisp seam where top meets side,
+       and rubble chips straddling the base so the silhouette embeds into the cap
+       instead of floating on it. */
     for (const o of boulders) {
-      blob(o.bx, o.by, o.br, o.bseed, o.bsq, x, o.brot);
-      const g2 = x.createLinearGradient(o.bx - o.br, o.by - o.br, o.bx + o.br * 0.7, o.by + o.br);
-      g2.addColorStop(0, rgb(...shade([196, 194, 200], o.tn)));
-      g2.addColorStop(0.5, rgb(...shade([120, 118, 126], o.tn)));
-      g2.addColorStop(1, rgb(...shade([52, 52, 62], o.tn)));
-      x.fillStyle = g2; x.fill();
+      const body = blobPts(o.bx, o.by, o.br, o.bseed, o.bsq, o.brot);
+      const capp = blobPts(o.bx - LIGHT.x * o.br * 0.26, o.by - o.br * 0.30, o.br * 0.66, o.bseed, o.bsq, o.brot);
+      x.save();
+      tracePts(body, x); x.clip();
+      // side plane: mid value, only mildly graded
+      const g2 = x.createLinearGradient(o.bx, o.by - o.br, o.bx, o.by + o.br);
+      g2.addColorStop(0, rgb(...shade([128, 122, 116], o.tn)));
+      g2.addColorStop(0.62, rgb(...shade([88, 84, 82], o.tn)));
+      g2.addColorStop(1, rgb(...shade([34, 32, 36], o.tn)));
+      x.fillStyle = g2; x.fillRect(o.bx - o.br * 1.6, o.by - o.br * 1.6, o.br * 3.2, o.br * 3.2);
+      // dark underside — a flat band, not a gradient, so it reads as a plane
+      x.fillStyle = `rgba(12,12,16,0.62)`;
+      x.fillRect(o.bx - o.br * 1.6, o.by + o.br * 0.30, o.br * 3.2, o.br * 1.6);
+      // lit top plane
+      tracePts(capp, x);
+      const g3 = x.createLinearGradient(o.bx - o.br, o.by - o.br, o.bx + o.br * 0.6, o.by);
+      g3.addColorStop(0, rgb(...shade([214, 208, 194], o.tn)));
+      g3.addColorStop(1, rgb(...shade([150, 144, 134], o.tn)));
+      x.fillStyle = g3; x.fill();
+      // crisp seam between the top and side planes
+      x.strokeStyle = 'rgba(10,10,14,0.5)'; x.lineWidth = 1.2; x.lineJoin = 'miter';
+      tracePts(capp, x); x.stroke();
+      // one fracture running down the side plane
+      x.strokeStyle = 'rgba(8,8,12,0.5)'; x.lineWidth = 1.1;
+      x.beginPath(); x.moveTo(o.bx + o.br * 0.1, o.by - o.br * 0.2);
+      x.lineTo(o.bx + o.br * 0.42, o.by + o.br * 0.18); x.lineTo(o.bx + o.br * 0.3, o.by + o.br * 0.6); x.stroke();
+      x.restore();
+      // hard contact seam + chips straddling the base
+      x.save();
+      x.strokeStyle = 'rgba(6,6,10,0.55)'; x.lineWidth = 1.4; x.lineJoin = 'miter';
+      tracePts(body, x); x.stroke();
+      const Rc = mulberry32(o.bseed ^ 0x2B1D);
+      for (let i = 0; i < 3; i++) {
+        const ca = Math.PI * (0.15 + Rc() * 0.7), cr = o.br * (0.85 + Rc() * 0.2);
+        const px = o.bx + Math.cos(ca) * cr, py = o.by + Math.sin(ca) * cr * o.bsq;
+        const chip = blobPts(px, py, o.br * (0.14 + Rc() * 0.14), (o.bseed ^ (i * 911)) | 0, 0.8, Rc() * TAU);
+        tracePts(chip, x); x.fillStyle = `rgba(${86 + Rc() * 40 | 0},${82 + Rc() * 36 | 0},${78 + Rc() * 30 | 0},0.92)`; x.fill();
+        x.strokeStyle = 'rgba(8,8,12,0.45)'; x.lineWidth = 0.9; x.stroke();
+      }
+      x.restore();
       // boulders join the silhouette that later drives mottling and the rim light
-      blob(o.bx, o.by, o.br, o.bseed, o.bsq, topMask.x, o.brot);
+      tracePts(body, topMask.x);
       topMask.x.fillStyle = '#fff'; topMask.x.fill();
     }
     // (d3) sub-tile rubble chips + moss, clipped to each cell's own cap
@@ -746,10 +882,12 @@ function bakeTerrain(grid) {
     for (let i = 0; i < (cliffCells.length / 2) | 0; i++) {
       const cell = cliffCells[(Rm() * cliffCells.length) | 0];
       const px = cell[0] * TILE + Rm() * TILE, py = cell[1] * TILE + Rm() * TILE, a = Rm() * TAU;
+      // longer, straighter runs with sharper direction changes: fracture lines,
+      // not squiggles. Pale rim on the sunward side of each dark fissure.
       const steps = [];
       let qa = a;
-      for (let s = 0; s < 3; s++) { qa += (Rm() - 0.5) * 1.3; steps.push([Math.cos(qa) * (4 + Rm() * 6), Math.sin(qa) * (3 + Rm() * 5)]); }
-      for (const [col, w, off] of [['rgba(226,228,236,0.16)', 1.1, 0.7], ['rgba(16,16,24,0.26)', 0.9, 0]]) {
+      for (let s = 0; s < 5; s++) { qa += (Rm() - 0.5) * 1.9; steps.push([Math.cos(qa) * (7 + Rm() * 13), Math.sin(qa) * (5 + Rm() * 10)]); }
+      for (const [col, w, off] of [['rgba(238,236,226,0.34)', 1.2, -1.0], ['rgba(10,10,16,0.52)', 1.3, 0]]) {
         let qx = px, qy = py;
         sc.x.strokeStyle = col; sc.x.lineWidth = w;
         sc.x.beginPath(); sc.x.moveTo(qx + off, qy + off);
@@ -765,7 +903,7 @@ function bakeTerrain(grid) {
       sc.x.beginPath(); sc.x.ellipse(px, py, rr, rr * 0.75, 0, 0, TAU); sc.x.fill();
     }
     sc.x.globalCompositeOperation = 'destination-in'; sc.x.drawImage(topMask.c, 0, 0);
-    x.save(); x.globalAlpha = 0.6; x.drawImage(sc.c, 0, 0); x.restore();
+    x.save(); x.globalAlpha = 0.5; x.drawImage(sc.c, 0, 0); x.restore();
 
     // (f) rim light: a single continuous crescent along the LIGHT-facing (upper
     // left) edge of the merged plateau silhouette. Built by subtracting the mask
@@ -774,10 +912,10 @@ function bakeTerrain(grid) {
     resetSc();
     sc.x.drawImage(topMask.c, 0, 0);
     sc.x.globalCompositeOperation = 'destination-out';
-    sc.x.drawImage(topMask.c, -LIGHT.x * 3.4, -LIGHT.y * 3.4);
-    tintSc('rgba(240,242,250,1)');
-    x.save(); x.globalAlpha = 0.6;
-    if (canFilter) x.filter = 'blur(1.1px)';
+    sc.x.drawImage(topMask.c, -LIGHT.x * 2.6, -LIGHT.y * 2.6);
+    tintSc('rgba(250,246,232,1)');
+    x.save(); x.globalAlpha = 0.82;
+    if (canFilter) x.filter = 'blur(0.5px)';
     x.drawImage(sc.c, 0, 0); x.filter = 'none'; x.restore();
     // matching soft core shadow on the shaded edge — a wide inner bevel is what
     // gives the whole formation its volume now that no tile is shaded on its own
@@ -785,9 +923,9 @@ function bakeTerrain(grid) {
     sc.x.drawImage(topMask.c, 0, 0);
     sc.x.globalCompositeOperation = 'destination-out';
     sc.x.drawImage(topMask.c, LIGHT.x * 9, LIGHT.y * 9);
-    tintSc('rgba(12,12,20,1)');
-    x.save(); x.globalAlpha = 0.42;
-    if (canFilter) x.filter = 'blur(4px)';
+    tintSc('rgba(10,9,14,1)');
+    x.save(); x.globalAlpha = 0.55;
+    if (canFilter) x.filter = 'blur(3px)';
     x.drawImage(sc.c, 0, 0); x.filter = 'none'; x.restore();
     // release the mask/scratch backing stores immediately instead of leaving
     // ~25MB of world-sized canvases for the GC to reclaim mid-first-frame
@@ -1365,31 +1503,89 @@ function bakeRock(v) {
     r: T.w * 0.28 * (0.5 + Rr() * 0.72), rot: (Rr() - 0.5) * 1.1, k: Rr()
   });
   items.sort((a, b) => a.oy - b.oy);   // back (higher) boulders first
+  /* Each boulder used to be ONE outlined polygon with a near-flat gradient — a
+     paper cutout pasted onto the mound. It is now three explicit planes: a lit
+     TOP plane (a shrunk, sunward-offset copy of the same outline), a mid-tone
+     SIDE plane, and a flat dark UNDERSIDE, separated by crisp seams, with a
+     contact shadow underneath and chips straddling the base so it embeds. */
+  const trace = (pts) => { x.beginPath(); pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath(); };
+  const scalePts = (pts, s, dx, dy) => pts.map(p => [p[0] * s + dx, p[1] * s + dy]);
   for (const it of items) {
     const pts = [];
+    // uneven angular steps: a few long flat faces meeting at genuinely sharp corners
+    const steps = []; let tot = 0;
+    for (let k = 0; k < T.ang; k++) { const s = 0.4 + Rr() * 1.4; steps.push(s); tot += s; }
+    let aa = Rr() * TAU;
     for (let k = 0; k < T.ang; k++) {
-      const a = k / T.ang * TAU;
-      pts.push([Math.cos(a) * it.r * (1 - T.jag * 0.5 + Rr() * T.jag), Math.sin(a) * it.r * (0.5 + Rr() * 0.42)]);
+      pts.push([Math.cos(aa) * it.r * (1 - T.jag * 0.5 + Rr() * T.jag), Math.sin(aa) * it.r * (0.5 + Rr() * 0.42)]);
+      aa += steps[k] / tot * TAU;
     }
     const cx0 = it.ox, cy0 = it.oy - it.r * 0.30;
-    poly(x, pts, shade(T.col, 0.66 + it.k * 0.62), it.rot, cx0, cy0);
+    const tone = 0.78 + it.k * 0.5;
     x.save(); x.translate(cx0, cy0); x.rotate(it.rot);
-    x.beginPath(); pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath();
-    x.clip();
-    // cracks
+    // contact shadow tying this boulder to whatever it sits on
+    x.save(); x.globalAlpha = 0.42; x.fillStyle = 'rgb(10,10,14)';
+    x.beginPath(); x.ellipse(LIGHT.x * -it.r * 0.12, it.r * 0.34, it.r * 0.98, it.r * 0.30, 0, 0, TAU); x.fill(); x.restore();
+    x.save();
+    trace(pts); x.clip();
+    // SIDE plane — mid value, barely graded, so it reads flat like a plane
+    const gs = x.createLinearGradient(0, -it.r, 0, it.r);
+    gs.addColorStop(0, rgb(...shade(T.col, tone * 1.12)));
+    gs.addColorStop(0.6, rgb(...shade(T.col, tone * 0.80)));
+    gs.addColorStop(1, rgb(...shade(T.col, tone * 0.40)));
+    x.fillStyle = gs; x.fillRect(-it.r * 1.6, -it.r * 1.6, it.r * 3.2, it.r * 3.2);
+    // UNDERSIDE — flat dark band
+    x.fillStyle = 'rgba(10,10,14,0.55)';
+    x.fillRect(-it.r * 1.6, it.r * 0.16, it.r * 3.2, it.r * 1.6);
+    // strata / bedding across the side plane
+    x.lineCap = 'butt';
+    for (let k = 0; k < 3; k++) {
+      const sy = -it.r * 0.35 + k * it.r * 0.28 + (Rr() - 0.5) * it.r * 0.1;
+      x.strokeStyle = 'rgba(236,232,220,0.20)'; x.lineWidth = 0.9;
+      x.beginPath(); x.moveTo(-it.r, sy - 1); x.lineTo(0, sy - 1 + (Rr() - 0.5) * 2); x.lineTo(it.r, sy - 0.6); x.stroke();
+      x.strokeStyle = 'rgba(10,10,15,0.34)'; x.lineWidth = 1.0;
+      x.beginPath(); x.moveTo(-it.r, sy); x.lineTo(0, sy + (Rr() - 0.5) * 2); x.lineTo(it.r, sy + 0.4); x.stroke();
+    }
+    // TOP plane — congruent shrunk copy pushed toward the light and up
+    const cap = scalePts(pts, 0.62, -LIGHT.x * it.r * 0.22, -it.r * 0.30);
+    trace(cap);
+    const gt = x.createLinearGradient(-it.r, -it.r, it.r * 0.6, it.r * 0.2);
+    gt.addColorStop(0, rgb(...shade(T.col, tone * 2.05)));
+    gt.addColorStop(1, rgb(...shade(T.col, tone * 1.42)));
+    x.fillStyle = gt; x.fill();
+    x.strokeStyle = 'rgba(10,10,14,0.5)'; x.lineWidth = 1.1; x.lineJoin = 'miter'; x.stroke();
+    // cracks / fracture lines
     x.lineCap = 'round';
-    for (let k = 0; k < T.crack; k++) {
+    for (let k = 0; k < T.crack + 1; k++) {
       let px = (Rr() - 0.5) * it.r, py = (Rr() - 0.5) * it.r * 0.7, a = Rr() * TAU;
-      x.strokeStyle = 'rgba(20,20,26,0.42)'; x.lineWidth = 0.9 + Rr() * 0.7;
+      x.strokeStyle = 'rgba(238,234,224,0.22)'; x.lineWidth = 0.9;
+      let qx = px, qy = py, qa2 = a;
+      x.beginPath(); x.moveTo(qx - 0.9, qy - 0.9);
+      for (let s = 0; s < 3; s++) { qa2 += (Rr() - 0.5) * 1.5; qx += Math.cos(qa2) * it.r * 0.38; qy += Math.sin(qa2) * it.r * 0.28; x.lineTo(qx - 0.9, qy - 0.9); }
+      x.stroke();
+      x.strokeStyle = 'rgba(14,14,20,0.55)'; x.lineWidth = 1.0 + Rr() * 0.6;
       x.beginPath(); x.moveTo(px, py);
-      for (let s = 0; s < 3; s++) { a += (Rr() - 0.5) * 1.5; px += Math.cos(a) * it.r * 0.34; py += Math.sin(a) * it.r * 0.26; x.lineTo(px, py); }
+      qx = px; qy = py; qa2 = a;
+      for (let s = 0; s < 3; s++) { qa2 += (Rr() - 0.5) * 1.5; qx += Math.cos(qa2) * it.r * 0.38; qy += Math.sin(qa2) * it.r * 0.28; x.lineTo(qx, qy); }
       x.stroke();
     }
     // moss
     if (T.moss > 0) for (let k = 0; k < 4; k++) {
       if (Rr() > T.moss) continue;
-      x.fillStyle = `rgba(${68 + Rr() * 40 | 0},${108 + Rr() * 40 | 0},${48 + Rr() * 30 | 0},${0.34 + Rr() * 0.3})`;
+      x.fillStyle = `rgba(${74 + Rr() * 34 | 0},${102 + Rr() * 34 | 0},${52 + Rr() * 26 | 0},${0.30 + Rr() * 0.26})`;
       x.beginPath(); x.ellipse((Rr() - 0.5) * it.r * 1.5, -it.r * (0.1 + Rr() * 0.4), it.r * (0.16 + Rr() * 0.3), it.r * (0.08 + Rr() * 0.16), Rr() * 3, 0, TAU); x.fill();
+    }
+    x.restore();
+    // hard silhouette seam + chips straddling the base
+    x.strokeStyle = 'rgba(8,8,12,0.5)'; x.lineWidth = 1.2; x.lineJoin = 'miter';
+    trace(pts); x.stroke();
+    for (let k = 0; k < 2; k++) {
+      const ca = Math.PI * (0.2 + Rr() * 0.6), cr = it.r * (0.8 + Rr() * 0.24);
+      const chip = [];
+      const m = 4 + (Rr() * 2 | 0);
+      for (let q = 0; q < m; q++) { const an = q / m * TAU + Rr() * 0.5; const rr2 = it.r * (0.10 + Rr() * 0.13); chip.push([Math.cos(ca) * cr + Math.cos(an) * rr2, Math.sin(ca) * cr * 0.6 + Math.sin(an) * rr2 * 0.7]); }
+      trace(chip); x.fillStyle = rgb(...shade(T.col, 0.72 + Rr() * 0.5)); x.fill();
+      x.strokeStyle = 'rgba(8,8,12,0.45)'; x.lineWidth = 0.8; x.stroke();
     }
     x.restore();
   }
