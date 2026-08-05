@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#0B0E13">
-<title>Ötüken Kapısı — Kule Savunması</title>
+<title>Altay — Kule Savunması</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800;900&display=swap" rel="stylesheet">
@@ -79,7 +79,7 @@
 
 <div id="boot" class="overlay">
   <div class="gate"><i></i><i></i><b></b></div>
-  <h1>ÖTÜKEN KAPISI</h1>
+  <h1>ALTAY</h1>
   <div class="kicker">Kule Savunması</div>
   <div class="track"><div id="bar"></div></div>
   <div id="bootLabel">hazırlanıyor…</div>
@@ -87,7 +87,7 @@
 
 <div id="lobby" class="overlay hidden">
   <div class="card">
-    <h1>ÖTÜKEN KAPISI</h1>
+    <h1>ALTAY</h1>
     <div class="kicker">Gök Kapısını Tut</div>
     <p class="lead">Erlik'in orduları bozkırdan yürüyor. Kulelerinle labirent ör, otuz dalgayı geri püskürt, kapıyı düşürme.</p>
     <button class="primary" id="btnSolo">Tek başına oyna</button>
@@ -140,7 +140,7 @@
 
 <script>
 /* ============================================================
-   ÖTÜKEN KAPISI — PART 1: CORE
+   ALTAY — PART 1: CORE
    deterministic rng, math, noise, procedural audio
    ============================================================ */
 'use strict';
@@ -3275,7 +3275,7 @@ function drawInfoPanel(x, px, py, w, h, S) {
       wrapText(x, def.lore, px + 10, py + 50 * S, w - 20, 11 * S, 9 * S, '#9a917f');
       txt(x, 'Zemine dokun → kur · ESC iptal', px + 10, py + h - 12 * S, 8.5 * S, '#7f8a72', 'left', 600, 'system-ui');
     } else {
-      txt(x, 'ÖTÜKEN KAPISI', px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
+      txt(x, 'ALTAY', px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
       txt(x, 'Kule seç, labirent ör, kapıyı koru.', px + 10, py + 33 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
       const wv = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
       const ct = CREEPS[wv.type];
@@ -3702,7 +3702,7 @@ function bootstrap() {
   for (const k in TOWERS) for (let l = 0; l < 3; l++) jobs.push({ label: TOWERS[k].names[l], fn: () => { R.sprites.towers[k + l] = bakeTower(k, l); } });
   // decor variants are tiny (~10ms for all twelve) — bake them in two jobs rather
   // than twelve so the loader does not spend a frame apiece on them
-  jobs.push({ label: 'Ötüken ormanı', fn: () => { for (let v = 0; v < TREES.length; v++) R.sprites.trees[v] = bakeTree(v); } });
+  jobs.push({ label: 'Altay ormanı', fn: () => { for (let v = 0; v < TREES.length; v++) R.sprites.trees[v] = bakeTree(v); } });
   jobs.push({ label: 'Kayalıklar', fn: () => { for (let v = 0; v < ROCKS.length; v++) R.sprites.rocks[v] = bakeRock(v); placeDecor(); } });
   jobs.push({ label: 'Bozkır dokusu', fn: () => bakeTerrain(G.grid) });
   let i = 0;
