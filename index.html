@@ -3258,7 +3258,7 @@ function drawHUD(x, W, H) {
     : G.phase === 'wave' ? `${CREEPS[w.type].name} · ${ARMOR[CREEPS[w.type].armor]} zırh · kalan ${G.creeps.filter(c => !c.dead).length + G.spawnLeft}` : '';
   txt(x, sub, W / 2, 4 + tbh / 2 + 11 * S, 10.5 * S, '#a89f8a', 'center', 600, 'system-ui');
   // speed + menu
-  const spR = addRect('speed', W - 78 * S, 4 + tbh / 2 - 14 * S, 34 * S, 28 * S, () => { G.speed = G.speed === 1 ? 2 : G.speed === 2 ? 3 : 1; Audio2.play('ui'); });
+  const spR = addRect('speed', W - 78 * S, 4 + tbh / 2 - 14 * S, 34 * S, 28 * S, () => { cmdSpeed(1); });
   panel(x, spR.x, spR.y, spR.w, spR.h, { r: 6 }); txt(x, G.speed + '×', spR.x + spR.w / 2, spR.y + spR.h / 2, 13 * S, '#ffd76a', 'center', 800);
   const mnR = addRect('menu', W - 40 * S, 4 + tbh / 2 - 14 * S, 30 * S, 28 * S, () => openMenu());
   panel(x, mnR.x, mnR.y, mnR.w, mnR.h, { r: 6 });
@@ -3354,7 +3354,7 @@ function drawHUDPortrait(x, W, H, M) {
   x.strokeStyle = '#e8d7ae'; x.lineWidth = 2;
   for (let i = -1; i <= 1; i++) { x.beginPath(); x.moveTo(mnR.x + 12, mnR.y + mnR.h / 2 + i * 7); x.lineTo(mnR.x + mnR.w - 12, mnR.y + mnR.h / 2 + i * 7); x.stroke(); }
   const spR = addRect('speed', mnR.x - gap - TOUCH_MIN, tY + 2, TOUCH_MIN, TOUCH_MIN,
-    () => { G.speed = G.speed === 1 ? 2 : G.speed === 2 ? 3 : 1; Audio2.play('ui'); });
+    () => { cmdSpeed(1); });
   panel(x, spR.x, spR.y, spR.w, spR.h, { r: 6 });
   txt(x, G.speed + '×', spR.x + spR.w / 2, spR.y + spR.h / 2, 15, '#ffd76a', 'center', 800);
 
@@ -3586,9 +3586,20 @@ function applyCmd(c, who) {
     const t = G.towers.find(t => t.id === c.id); if (t && t.owner === who) t.mode = (t.mode + 1) % 4;
   } else if (c.k === 'spell') {
     if (castSpell(c.i, c.x, c.y, who)) { if (c.i === 1) ev('blizzard', {}); }
+  } else if (c.k === 'speed') {
+    G.speed = clamp(c.v | 0, 1, 3);
   } else if (c.k === 'start') {
     if (G.phase === 'prep') { const bonus = Math.floor(G.prepTimer / TICK_HZ) * 4; G.gold[0] += bonus; G.gold[1] += bonus; G.prepTimer = 0; startWave(); ev('early', { bonus }); }
   }
+}
+/* Speed is part of the simulation: only the host advances ticks (see loop()),
+   so a guest mutating G.speed locally changed nothing but still lit up their
+   own HUD, which then never got corrected because snapshots carry no speed.
+   Route it through the command channel instead, and let it come back down in
+   the snapshot, so either player can change speed and both agree on it. */
+function cmdSpeed(cycle, want) {
+  const v = cycle ? (G.speed === 1 ? 2 : G.speed === 2 ? 3 : 1) : clamp(want, 1, 3);
+  if (v !== G.speed) { issue({ k: 'speed', v }); Audio2.play('ui'); }
 }
 function cmdStartWave() { issue({ k: 'start' }); }
 function cmdUpgrade() { if (UI.sel) issue({ k: 'upgrade', id: UI.sel.id }); }
@@ -3686,8 +3697,8 @@ function bindInput(cv) {
     else if (k === 'q') triggerSpell(0);
     else if (k === 'w') triggerSpell(1);
     else if (e.code === 'Space') { e.preventDefault(); cmdStartWave(); }
-    else if (k === '+' || k === '=') G.speed = clamp(G.speed + 1, 1, 3);
-    else if (k === '-') G.speed = clamp(G.speed - 1, 1, 3);
+    else if (k === '+' || k === '=') cmdSpeed(0, G.speed + 1);
+    else if (k === '-') cmdSpeed(0, G.speed - 1);
   });
 }
 function clampCam() {
@@ -3750,13 +3761,14 @@ function snapshot() {
   for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest]);
   const pr = [];
   for (const p of G.projs) pr.push([['arrow', 'shell', 'shard', 'blob'].indexOf(p.kind), Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.ang * 100) / 100]);
-  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, ev: EVQ.slice() };
+  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ev: EVQ.slice() };
   if (NET.gridDirty) { s.g = Array.from(G.grid); NET.gridDirty = false; }
   return s;
 }
 function applySnapshot(s) {
   G.tick = s.k; G.phase = s.ph; G.lives = s.lv; G.gold = s.gd; G.waveIdx = s.wi;
   G.prepTimer = s.pt; G.spawnLeft = s.sl; G.killed = s.kd; G.leaked = s.lk; G.score = s.sc;
+  if (s.sd) G.speed = s.sd;
   G.spell[0].cd = s.sp[0]; G.spell[1].cd = s.sp[1];
   if (s.g) { G.grid = Uint8Array.from(s.g); computeFlow(); }
   const old = new Map(G.creeps.map(c => [c.id, c]));
