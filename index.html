@@ -146,6 +146,12 @@
 'use strict';
 
 const TILE = 40, GW = 44, GH = 20;
+/* Co-op runs the exact same 30 waves as solo -- WAVES has no player-count term
+   and the 20 lives are one shared pool -- so a second player is pure upside.
+   Each player carries their own purse, which means two of them start the game
+   with 680 gold against a solo player's 340. Give each side a smaller purse so
+   the pair opens near, but still a little above, the solo economy. */
+const SOLO_START_GOLD = 340, COOP_START_GOLD = 200;
 /* rows held clear of rock so the maze has a northern and a southern detour */
 const LANE_ROWS = [2, 16];
 const WORLD_W = TILE * GW, WORLD_H = TILE * GH;
@@ -1809,7 +1815,7 @@ const WAVES = (() => {
 const G = {
   tick: 0, phase: 'prep', // prep | wave | over | won
   lives: 20, waveIdx: 0, spawnLeft: 0, spawnTimer: 0, prepTimer: 30 * TICK_HZ,
-  gold: [340, 340], score: [0, 0], leaked: 0, killed: 0,
+  gold: [SOLO_START_GOLD, SOLO_START_GOLD], score: [0, 0], leaked: 0, killed: 0,
   grid: null, towerAt: null, dist: null, flowOK: true,
   creeps: [], towers: [], projs: [], nextId: 1,
   spawn: { gx: 0, gy: GH >> 1 }, exit: { gx: GW - 1, gy: GH >> 1 },
@@ -3589,7 +3595,12 @@ function applyCmd(c, who) {
   } else if (c.k === 'speed') {
     G.speed = clamp(c.v | 0, 1, 3);
   } else if (c.k === 'start') {
-    if (G.phase === 'prep') { const bonus = Math.floor(G.prepTimer / TICK_HZ) * 4; G.gold[0] += bonus; G.gold[1] += bonus; G.prepTimer = 0; startWave(); ev('early', { bonus }); }
+    if (G.phase === 'prep') {
+      // paid to each player, so halve it in co-op to keep the pot the same as solo
+      const raw = Math.floor(G.prepTimer / TICK_HZ) * 4;
+      const bonus = NET.active ? Math.round(raw / 2) : raw;
+      G.gold[0] += bonus; G.gold[1] += bonus; G.prepTimer = 0; startWave(); ev('early', { bonus });
+    }
   }
 }
 /* Speed is part of the simulation: only the host advances ticks (see loop()),
@@ -3820,9 +3831,13 @@ function netErr(t) {
     '<br><span class="dim">PeerJS\'in ücretsiz sunucusu kullanıyoruz; ara sıra doluyor. Birkaç saniye sonra tekrar dene ya da tek başına oyna.</span>' +
     '<br><button id="btnRetry" class="btn" style="margin-top:10px">Tekrar dene</button>';
 }
+/* Called the moment a co-op session is chosen, before any tower is bought, so
+   nobody ever has gold taken away from under them mid-game. */
+function setCoopEconomy() { G.gold[0] = G.gold[1] = COOP_START_GOLD; }
 function netHost(code, attempt) {
   attempt = attempt || 0;
   NET.active = true; NET.isHost = true; NET.me = 0; NET.room = code; NET.status = 'oda ' + code + ' · bekleniyor';
+  setCoopEconomy();
   let opened = false;
   let p;
   try { p = new window.Peer('otuken-' + code, { debug: 0, config: ICE }); }
@@ -3856,6 +3871,7 @@ function netHost(code, attempt) {
 }
 function netJoin(code) {
   NET.active = true; NET.isHost = false; NET.me = 1; NET.room = code; NET.status = 'bağlanıyor';
+  setCoopEconomy();
   const p = new window.Peer(undefined, { debug: 0, config: ICE });
   NET.peer = p;
   p.on('open', () => {
