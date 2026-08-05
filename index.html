@@ -107,7 +107,7 @@
     <h1>Duraklat</h1>
     <div class="kicker">Ordugâh</div>
     <button class="primary" id="mClose">Savaşa dön</button>
-    <button id="mMusic">Ezgi: açık</button>
+    <button id="mMusic">Müzik: açık</button>
     <button id="mSfx">Sesler: açık</button>
     <button id="mAuto">Otomatik dalga: kapalı</button>
     <button id="mEnd">Sonsuz mod: kapalı</button>
@@ -3665,10 +3665,15 @@ function bindInput(cv) {
     const w = R.screenToWorld(p[0], p[1]);
     const gx = (w[0] / TILE) | 0, gy = (w[1] / TILE) | 0;
     if (UI.spellAim === 0) { issue({ k: 'spell', i: 0, x: w[0], y: w[1] }); UI.spellAim = null; return; }
-    if (UI.buildKind) { issue({ k: 'build', kind: UI.buildKind, gx, gy }); return; }
     const t = inGrid(gx, gy) ? findTower(gx, gy) : null;
-    UI.sel = t || null;
-    if (t) Audio2.play('ui');
+    // Selecting an existing tower wins over building. Build mode stays armed
+    // after a placement so several towers can go down in a row, but that used
+    // to mean a tap on a finished tower was read as "build here", which fails
+    // and returns -- leaving the upgrade panel unreachable. There is no Esc key
+    // on a phone, so this made upgrading impossible on mobile.
+    if (t) { UI.buildKind = null; UI.sel = t; Audio2.play('ui'); return; }
+    if (UI.buildKind) { issue({ k: 'build', kind: UI.buildKind, gx, gy }); return; }
+    UI.sel = null;
   });
   cv.addEventListener('wheel', e => {
     e.preventDefault();
@@ -3950,7 +3955,7 @@ function closeLobby() { $('lobby').classList.add('hidden'); Audio2.init(); }
 function openMenu() { $('menu').classList.remove('hidden'); syncMenu(); }
 function closeMenu() { $('menu').classList.add('hidden'); }
 function syncMenu() {
-  $('mMusic').textContent = 'Ezgi: ' + (Audio2.musicOn ? 'açık' : 'kapalı');
+  $('mMusic').textContent = 'Müzik: ' + (Audio2.musicOn ? 'açık' : 'kapalı');
   $('mSfx').textContent = 'Sesler: ' + (Audio2.enabled ? 'açık' : 'kapalı');
   $('mAuto').textContent = 'Otomatik dalga: ' + (G.autoStart ? 'açık' : 'kapalı');
   $('mEnd').textContent = 'Sonsuz mod: ' + (G.endless ? 'açık' : 'kapalı');
