@@ -2502,6 +2502,9 @@ const R = {
   cam: { x: WORLD_W / 2, y: WORLD_H / 2, z: 1, tz: 1 },
   sprites: { units: {}, towers: {}, trees: [], rocks: [] },
   decor: [], time: 0, hud: { rects: [] }, hover: null,
+  /* vertical space the HUD reserves — kept in sync with hudMetrics() so the
+     camera, the world<->screen mapping and the hit-test dead zones agree */
+  viewTop: 52, viewBot: 128, uiBot: 118,
   init(canvas) {
     this.cv = canvas; this.x = canvas.getContext('2d', { alpha: false });
     this.resize();
@@ -2517,24 +2520,28 @@ const R = {
     this.fitCamera();
   },
   fitCamera() {
-    const uiTop = 52, uiBot = 118;
+    const M = hudMetrics(this.W, this.H);
+    const uiTop = M.top, uiBot = M.bot;
     const availH = Math.max(160, this.H - uiTop - uiBot);
     const zFit = Math.min(this.W / WORLD_W, availH / WORLD_H);
     const zCover = Math.max(this.W / WORLD_W, availH / WORLD_H);
-    // wide screens see the whole battlefield; tall phones zoom in and pan
-    const z = Math.max(zFit, Math.min(zCover, 0.62));
+    // wide screens see the whole battlefield; tall phones zoom in and pan.
+    // portrait allows a deeper zoom so the 2.2:1 map fills the tall viewport
+    // instead of sitting in a thick letterbox.
+    const z = Math.max(zFit, Math.min(zCover, M.portrait ? 0.84 : 0.62));
     this.cam.z = this.cam.tz = z;
     this.cam.x = WORLD_W / 2; this.cam.y = WORLD_H / 2;
-    this.viewTop = uiTop;
+    this.viewTop = uiTop; this.viewBot = M.viewBot; this.uiBot = uiBot;
     clampCam();
   },
+  viewMidY() { return (this.viewTop + (this.H - this.viewBot)) / 2; },
   worldToScreen(wx, wy) {
     const c = this.cam;
-    return [(wx - c.x) * c.z + this.W / 2, (wy - c.y) * c.z + (this.viewTop + (this.H - 128)) / 2];
+    return [(wx - c.x) * c.z + this.W / 2, (wy - c.y) * c.z + this.viewMidY()];
   },
   screenToWorld(sx, sy) {
     const c = this.cam;
-    return [(sx - this.W / 2) / c.z + c.x, (sy - (this.viewTop + (this.H - 128)) / 2) / c.z + c.y];
+    return [(sx - this.W / 2) / c.z + c.x, (sy - this.viewMidY()) / c.z + c.y];
   },
   bakeAll(progressCb) {
     const steps = [];
@@ -2586,7 +2593,7 @@ function render(dtReal, alpha) {
   const sh = FX.shake;
   const shx = Math.cos(FX.shakeA * 1.7) * sh, shy = Math.sin(FX.shakeA * 2.3) * sh;
   const c = R.cam;
-  const ox = W / 2 - c.x * c.z + shx, oy = (R.viewTop + (H - 128)) / 2 - c.y * c.z + shy;
+  const ox = W / 2 - c.x * c.z + shx, oy = R.viewMidY() - c.y * c.z + shy;
   x.save(); x.translate(ox, oy); x.scale(c.z, c.z);
 
   R.gx.setTransform(1, 0, 0, 1, 0, 0); R.gx.clearRect(0, 0, R.glow.width, R.glow.height);
@@ -3120,6 +3127,7 @@ const UI = {
   buildKind: null, sel: null, spellAim: null,
   aim: [0, 0], aimW: [0, 0], placeOK: true,
   toasts: [], rects: [], scale: 1, panelH: 128, hoverBtn: null,
+  hudTop: 1e9, hudBottom: 54,
   toast(msg, col) { this.toasts.push({ msg, col: col || '#ffd9a0', life: 2.4 }); if (this.toasts.length > 4) this.toasts.shift(); }
 };
 const NET = {
@@ -3156,6 +3164,18 @@ function txt(x, s, px, py, size, col, align, weight, font) {
   x.lineWidth = Math.max(2, size * 0.22); x.strokeStyle = 'rgba(0,0,0,0.72)'; x.strokeText(s, px, py);
   x.fillStyle = col; x.fillText(s, px, py);
 }
+/* trim a string with an ellipsis so it never runs past its box — portrait
+   panels are narrow and a clipped mid-word label reads as a bug */
+function fitText(x, s, maxW, size, font, weight) {
+  x.font = `${weight || 600} ${size}px ${font || '"Cinzel",Georgia,serif'}`;
+  if (x.measureText(s).width <= maxW) return s;
+  let lo = 0, hi = s.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (x.measureText(s.slice(0, mid) + '…').width <= maxW) lo = mid; else hi = mid - 1;
+  }
+  return s.slice(0, lo).trimEnd() + '…';
+}
 function btn(x, r, label, sub, active, disabled, icon) {
   panel(x, r.x, r.y, r.w, r.h, { hi: active, gold: active, r: 7 });
   if (icon) {
@@ -3174,10 +3194,45 @@ function btn(x, r, label, sub, active, disabled, icon) {
 }
 function addRect(id, px, py, w, h, act) { const r = { id, x: px, y: py, w, h, act }; UI.rects.push(r); return r; }
 
+/* ------------------------------------------------------------
+   LAYOUT METRICS
+   One source of truth for how much vertical space the HUD eats,
+   consumed by R.fitCamera(), R.viewMidY(), clampCam() and drawHUD().
+   Wide/landscape returns exactly the numbers the old code hardcoded
+   (top 52 / bottom 118 / view centre 128) so nothing there shifts.
+   Portrait returns a taller, stacked budget: a two-line top block and
+   a three-row bottom block, every touch target >= 44 CSS px.
+   ------------------------------------------------------------ */
+const TOUCH_MIN = 44;
+function hudMetrics(W, H) {
+  const portrait = H > W;
+  if (!portrait) {
+    const S = clamp(W / 900, 0.72, 1.15);
+    const bh = 108 * S;
+    return { portrait: false, S, bh, top: 52, bot: 118, viewBot: 128, hudTop: H - bh - 8, hudBottom: 54 };
+  }
+  const S = clamp(W / 390, 0.86, 1.22);
+  const pad = 12, gap = 6;
+  const innerW = W - pad * 2;
+  // tower buttons: as large as the width allows, never below the 44px minimum
+  const tbw = clamp(Math.floor((innerW - gap * 4) / 5), TOUCH_MIN, 56);
+  const infoH = 78, actH = 48;
+  const topStatsH = 48, topWaveH = 36;
+  const top = 4 + topStatsH + 4 + topWaveH + 4;              // 96
+  const bot = 6 + infoH + gap + tbw + gap + actH + 8;        // 152 + tbw
+  return {
+    portrait: true, S, pad, gap, innerW, tbw, infoH, actH, topStatsH, topWaveH,
+    top, bot, viewBot: bot, hudTop: H - bot, hudBottom: top - 4
+  };
+}
+
 function drawHUD(x, W, H) {
   UI.rects.length = 0;
-  const S = clamp(W / 900, 0.72, 1.15); UI.scale = S;
-  const bh = 108 * S; UI.panelH = bh;
+  const M = hudMetrics(W, H);
+  UI.scale = M.S; UI.hudTop = M.hudTop; UI.hudBottom = M.hudBottom; UI.panelH = M.bot;
+  if (M.portrait) { drawHUDPortrait(x, W, H, M); return; }
+  const S = M.S;
+  const bh = M.bh; UI.panelH = bh;
 
   /* ---- top bar ---- */
   const tbh = 46 * S;
@@ -3233,7 +3288,12 @@ function drawHUD(x, W, H) {
   // spells + start (right)
   const sw = 52 * S;
   let rx = W - 14 - sw;
-  const startR = addRect('start', rx - 96 * S, by + (bh - 44 * S) / 2, 92 * S, 44 * S, () => cmdStartWave());
+  // the wave button sits left of *all* spell buttons — it used to be offset from
+  // the first one only, so the last spell was drawn on top of its right half and
+  // (rects being hit-tested in insertion order) could never be tapped.
+  const spellsW = SPELLS.length * sw + (SPELLS.length - 1) * 6 * S;
+  const startW = 92 * S, startH = Math.max(TOUCH_MIN, 44 * S);
+  const startR = addRect('start', W - 14 - spellsW - 8 * S - startW, by + (bh - startH) / 2, startW, startH, () => cmdStartWave());
   panel(x, startR.x, startR.y, startR.w, startR.h, { gold: G.phase === 'prep', hi: G.phase === 'prep', r: 7 });
   txt(x, G.phase === 'prep' ? 'DALGAYI ÇAĞIR' : 'SAVAŞ SÜRÜYOR', startR.x + startR.w / 2, startR.y + startR.h / 2 - 6 * S, 10.5 * S, G.phase === 'prep' ? '#ffe08a' : '#8a8578', 'center', 800);
   txt(x, G.phase === 'prep' ? `+${Math.ceil(G.prepTimer / TICK_HZ)}s erken bonus` : `dalga ${WAVES.length}'e kadar`, startR.x + startR.w / 2, startR.y + startR.h / 2 + 10 * S, 8.5 * S, '#a89f8a', 'center', 600, 'system-ui');
@@ -3262,6 +3322,147 @@ function drawHUD(x, W, H) {
 
   /* ---- end screens ---- */
   if (G.phase === 'over' || G.phase === 'won') drawEndScreen(x, W, H, S);
+}
+
+/* ------------------------------------------------------------
+   PORTRAIT HUD — stacked rows instead of one crammed strip.
+     top:    [ can · altın ................ hız | menü ]   (44px buttons)
+             [ DALGA n HAZIR / creep · zırh · süre     ]
+     bottom: [ bilgi / seçili kule eylemleri          ]
+             [ 5 kule düğmesi                        ]
+             [ DALGAYI ÇAĞIR        | büyü | büyü    ]
+   Every rect here is >= 44x44 CSS px and rows never overlap.
+   ------------------------------------------------------------ */
+function drawHUDPortrait(x, W, H, M) {
+  const pad = M.pad, gap = M.gap, innerW = M.innerW;
+
+  /* ---- top block: stats strip ---- */
+  const tY = 4, tH = M.topStatsH, cy = tY + tH / 2;
+  panel(x, 6, tY, W - 12, tH, { gold: true, r: 9 });
+  const lifeCol = G.lives > 10 ? '#ff9a8a' : '#ff4b3a';
+  drawHeart(x, 24, cy, 11, lifeCol);
+  txt(x, String(Math.max(0, G.lives)), 40, cy, 18, '#ffe9d0', 'left', 800);
+  let gxp = 76;
+  for (let i = 0; i < (NET.active ? 2 : 1); i++) {
+    drawCoin(x, gxp + 9, cy, 9);
+    txt(x, String(G.gold[i] | 0), gxp + 22, cy, 15, i === NET.me ? '#ffd76a' : '#c9b98a', 'left', 800);
+    if (NET.active) { x.fillStyle = i === 0 ? '#4ea9ff' : '#ff9a4e'; x.beginPath(); x.arc(gxp + 3, cy - 13, 3, 0, TAU); x.fill(); }
+    gxp += 82;
+  }
+  const mnR = addRect('menu', W - pad - TOUCH_MIN, tY + 2, TOUCH_MIN, TOUCH_MIN, () => openMenu());
+  panel(x, mnR.x, mnR.y, mnR.w, mnR.h, { r: 6 });
+  x.strokeStyle = '#e8d7ae'; x.lineWidth = 2;
+  for (let i = -1; i <= 1; i++) { x.beginPath(); x.moveTo(mnR.x + 12, mnR.y + mnR.h / 2 + i * 7); x.lineTo(mnR.x + mnR.w - 12, mnR.y + mnR.h / 2 + i * 7); x.stroke(); }
+  const spR = addRect('speed', mnR.x - gap - TOUCH_MIN, tY + 2, TOUCH_MIN, TOUCH_MIN,
+    () => { G.speed = G.speed === 1 ? 2 : G.speed === 2 ? 3 : 1; Audio2.play('ui'); });
+  panel(x, spR.x, spR.y, spR.w, spR.h, { r: 6 });
+  txt(x, G.speed + '×', spR.x + spR.w / 2, spR.y + spR.h / 2, 15, '#ffd76a', 'center', 800);
+
+  /* ---- top block: wave banner ---- */
+  const wy = tY + tH + 4, wH = M.topWaveH;
+  panel(x, 6, wy, W - 12, wH, { r: 8 });
+  const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
+  const label = G.phase === 'wave' ? `DALGA ${w.n}` : G.phase === 'won' ? 'ZAFER' : G.phase === 'over' ? 'YENİLGİ' : `DALGA ${w.n} HAZIR`;
+  txt(x, label, W / 2, wy + 13, 14, w.boss ? '#ff8a5a' : '#f2e4c4', 'center', 800);
+  const sub = G.phase === 'prep'
+    ? `${CREEPS[w.type].name} ×${w.count} · ${ARMOR[CREEPS[w.type].armor]} zırh · ${Math.ceil(G.prepTimer / TICK_HZ)}s`
+    : G.phase === 'wave' ? `${CREEPS[w.type].name} · kalan ${G.creeps.filter(c => !c.dead).length + G.spawnLeft}` : '';
+  txt(x, sub, W / 2, wy + 27, 9.5, '#a89f8a', 'center', 600, 'system-ui');
+  if (NET.active) txt(x, NET.status, W - 14, wy + 27, 8.5, '#8fd6a0', 'right', 600, 'system-ui');
+
+  /* ---- bottom block ---- */
+  const bTop = H - M.bot;
+  panel(x, 6, bTop + 2, W - 12, H - bTop - 8, { gold: true, r: 10 });
+  const infoY = bTop + 6;
+  const towY = infoY + M.infoH + gap;
+  const actY = towY + M.tbw + gap;
+
+  drawInfoPanelPortrait(x, pad, infoY, innerW, M.infoH);
+
+  // tower row — centred, square, >= 44px
+  const rowW = M.tbw * 5 + gap * 4;
+  const bx0 = (W - rowW) / 2;
+  TOWER_KEYS.forEach((k, i) => {
+    const def = TOWERS[k];
+    const r = addRect('b' + k, bx0 + i * (M.tbw + gap), towY, M.tbw, M.tbw, () => selectBuild(k));
+    const spr = R.sprites.towers[k + '0'];
+    btn(x, r, def.key, String(def.cost), UI.buildKind === k, G.gold[NET.me] < def.cost, spr && spr.base);
+  });
+
+  // action row — wave call on the left, the two spells on the right
+  const sw = M.actH;
+  const sp0x = W - pad - sw, sp1x = sp0x - gap - sw;
+  const startR = addRect('start', pad, actY, sp1x - gap - pad, sw, () => cmdStartWave());
+  panel(x, startR.x, startR.y, startR.w, startR.h, { gold: G.phase === 'prep', hi: G.phase === 'prep', r: 7 });
+  txt(x, G.phase === 'prep' ? 'DALGAYI ÇAĞIR' : 'SAVAŞ SÜRÜYOR', startR.x + startR.w / 2, startR.y + startR.h / 2 - 7,
+    11.5, G.phase === 'prep' ? '#ffe08a' : '#8a8578', 'center', 800);
+  txt(x, G.phase === 'prep' ? `+${Math.ceil(G.prepTimer / TICK_HZ)}s erken bonus` : `dalga ${WAVES.length}'e kadar`,
+    startR.x + startR.w / 2, startR.y + startR.h / 2 + 10, 9, '#a89f8a', 'center', 600, 'system-ui');
+  SPELLS.forEach((sp, i) => {
+    const r = addRect('sp' + i, i === 0 ? sp0x : sp1x, actY, sw, sw, () => triggerSpell(i));
+    const ready = G.spell[i].cd <= 0;
+    panel(x, r.x, r.y, r.w, r.h, { hi: UI.spellAim === i, gold: ready, r: 7 });
+    drawSpellIcon(x, i, r.x + r.w / 2, r.y + r.h / 2 - 3, 14, ready);
+    txt(x, sp.key, r.x + 7, r.y + 9, 9, '#ffd76a', 'left', 800);
+    if (!ready) {
+      x.save(); x.fillStyle = 'rgba(6,8,12,0.62)'; roundRect(x, r.x, r.y, r.w, r.h, 7); x.fill();
+      txt(x, Math.ceil(G.spell[i].cd / TICK_HZ) + 's', r.x + r.w / 2, r.y + r.h / 2, 14, '#cfd6e0', 'center', 800); x.restore();
+    }
+  });
+
+  /* ---- toasts ---- */
+  UI.toasts.forEach((t, i) => {
+    t.life -= 1 / 60;
+    x.save(); x.globalAlpha = clamp(t.life, 0, 1);
+    txt(x, t.msg, W / 2, bTop - 18 - i * 20, 12.5, t.col, 'center', 700);
+    x.restore();
+  });
+  UI.toasts = UI.toasts.filter(t => t.life > 0);
+
+  if (G.phase === 'over' || G.phase === 'won') drawEndScreen(x, W, H, M.S);
+}
+
+/* portrait info row: three text lines, or two lines + a 44px action bar
+   when a tower is selected. Line pitch is fixed so nothing collides. */
+function drawInfoPanelPortrait(x, px, py, w, h) {
+  panel(x, px, py, w, h, { r: 7 });
+  const t = UI.sel;
+  const maxW = w - 20;
+  const L = (s, i, size, col, font) => txt(x, fitText(x, s, maxW, size, font, 600), px + 10, py + 13 + i * 15, size, col, 'left', 600, font);
+  if (!t) {
+    const k = UI.buildKind;
+    if (k) {
+      const def = TOWERS[k], lv = def.lv[0];
+      txt(x, def.name, px + 10, py + 14, 13, '#ffe0a0', 'left', 800);
+      L(`${lv.dmg} hasar · ${DMGT[def.dmgType]} · ${lv.range} menzil`, 1, 10, '#c9bfa6', 'system-ui');
+      L(def.lore, 2, 9, '#9a917f', 'system-ui');
+      L('Zemine dokun → kur · düğmeye yeniden dokun → iptal', 3, 9, '#7f8a72', 'system-ui');
+    } else {
+      const wv = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
+      const ct = CREEPS[wv.type];
+      txt(x, 'Kule seç, labirent ör, kapıyı koru.', px + 10, py + 14, 11, '#ffe0a0', 'left', 800);
+      L(`Sıradaki: ${ct.name} — ${ARMOR[ct.armor]} zırh${ct.air ? ' · uçar' : ''}`, 1, 10, '#e0b070', 'system-ui');
+      L(counterHint(ct.armor), 2, 9, '#9a917f', 'system-ui');
+      L(`Öldürülen ${G.killed} · Sızan ${G.leaked}`, 3, 9, '#7f8a72', 'system-ui');
+    }
+    return;
+  }
+  const def = TOWERS[t.kind], st = towerStat(t), nxt = def.lv[t.lvl + 1];
+  txt(x, fitText(x, def.names[t.lvl], maxW, 12.5, null, 800), px + 10, py + 12, 12.5, '#ffe0a0', 'left', 800);
+  txt(x, fitText(x, `${st.dmg} hasar · ${(1 / st.rate).toFixed(1)}/sn · ${st.range} menzil · ${t.kills} kelle`, maxW, 9.5, 'system-ui', 600),
+    px + 10, py + 26, 9.5, '#c9bfa6', 'left', 600, 'system-ui');
+  const modeNames = ['ilk', 'güçlü', 'zayıf', 'yakın'];
+  const bw = (w - 20 - 12) / 3, byy = py + h - TOUCH_MIN - 2;
+  const uR = addRect('up', px + 10, byy, bw, TOUCH_MIN, () => cmdUpgrade());
+  const sR = addRect('sell', px + 16 + bw, byy, bw, TOUCH_MIN, () => cmdSell());
+  const mR = addRect('mode', px + 22 + bw * 2, byy, bw, TOUCH_MIN, () => cmdMode());
+  const canUp = nxt && G.gold[NET.me] >= nxt.cost && t.owner === NET.me;
+  panel(x, uR.x, uR.y, uR.w, uR.h, { r: 5, gold: canUp });
+  txt(x, nxt ? `YÜKSELT ${nxt.cost}` : 'MAKS', uR.x + uR.w / 2, uR.y + uR.h / 2, 9.5, canUp ? '#ffd76a' : '#8a8578', 'center', 800);
+  panel(x, sR.x, sR.y, sR.w, sR.h, { r: 5 });
+  txt(x, `SAT ${Math.round(t.invest * 0.72)}`, sR.x + sR.w / 2, sR.y + sR.h / 2, 9.5, '#e0c9a0', 'center', 800);
+  panel(x, mR.x, mR.y, mR.w, mR.h, { r: 5 });
+  txt(x, 'HEDEF: ' + modeNames[t.mode], mR.x + mR.w / 2, mR.y + mR.h / 2, 9, '#c9d6e0', 'center', 800);
 }
 function drawInfoPanel(x, px, py, w, h, S) {
   panel(x, px, py, w, h, { r: 7 });
@@ -3349,7 +3550,8 @@ function drawEndScreen(x, W, H, S) {
   txt(x, won ? 'KAPI TUTULDU' : 'KAPI DÜŞTÜ', W / 2, H / 2 - 60 * S, 40 * S, won ? '#ffd76a' : '#ff6a4a', 'center', 900);
   txt(x, won ? `${WAVES.length} dalga geri püskürtüldü.` : `Dalga ${(WAVES[G.waveIdx] || { n: 30 }).n}'de düştün.`, W / 2, H / 2 - 18 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
   txt(x, `Öldürülen ${G.killed} · Sızan ${G.leaked} · Puan ${G.score[NET.me] | 0}`, W / 2, H / 2 + 8 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
-  const r = addRect('again', W / 2 - 90 * S, H / 2 + 34 * S, 180 * S, 44 * S, () => location.reload());
+  const ebw = Math.max(180, 180 * S), ebh = Math.max(TOUCH_MIN + 4, 44 * S);
+  const r = addRect('again', W / 2 - ebw / 2, H / 2 + 34 * S, ebw, ebh, () => location.reload());
   panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: true, r: 8 });
   txt(x, 'YENİDEN', r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#ffe08a', 'center', 800);
   x.restore();
@@ -3448,7 +3650,7 @@ function bindInput(cv) {
     for (const r of UI.rects) {
       if (p[0] >= r.x && p[0] <= r.x + r.w && p[1] >= r.y && p[1] <= r.y + r.h) { r.act(); return; }
     }
-    if (p[1] > R.H - UI.panelH - 8 || p[1] < 54) return;
+    if (p[1] > UI.hudTop || p[1] < UI.hudBottom) return;
     const w = R.screenToWorld(p[0], p[1]);
     const gx = (w[0] / TILE) | 0, gy = (w[1] / TILE) | 0;
     if (UI.spellAim === 0) { issue({ k: 'spell', i: 0, x: w[0], y: w[1] }); UI.spellAim = null; return; }
@@ -3490,7 +3692,7 @@ function bindInput(cv) {
 }
 function clampCam() {
   const c = R.cam;
-  const halfW = R.W / 2 / c.z, halfH = (R.H - 170) / 2 / c.z;
+  const halfW = R.W / 2 / c.z, halfH = Math.max(80, R.H - R.viewTop - R.uiBot) / 2 / c.z;
   const mx = Math.max(0, WORLD_W / 2 - halfW), my = Math.max(0, WORLD_H / 2 - halfH);
   c.x = clamp(c.x, WORLD_W / 2 - mx, WORLD_W / 2 + mx);
   c.y = clamp(c.y, WORLD_H / 2 - my, WORLD_H / 2 + my);
