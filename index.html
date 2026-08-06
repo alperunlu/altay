@@ -1784,8 +1784,18 @@ const CREEPS = {
   }
 };
 
-/* ---------- wave table (30) ---------- */
-const WAVES = (() => {
+/* ---------- wave table (30) ----------
+   Each table entry is either a single [type,count] pair (today's shape) or
+   an array of them for a mixed-composition wave: [[type1,count1],[type2,count2]].
+   Groups spawn in order, each after the previous group's own gap-spaced
+   spawns finish plus that group's own `delay` (see startWave/simTick). */
+const DIFFICULTY = {
+  easy:   { hp: 0.78, bounty: 1.20, lives: 24 },
+  normal: { hp: 1,    bounty: 1,    lives: 20 },
+  hard:   { hp: 1.30, bounty: 0.85, lives: 16 }
+};
+function buildWaves(difficulty) {
+  const scale = DIFFICULTY[difficulty] || DIFFICULTY.normal;
   const order = [
     ['kobold', 12], ['kobold', 16], ['ghoul', 12], ['harpy', 10], ['grunt', 10],
     ['ghoul', 18], ['gargoyle', 10], ['kobold', 26], ['grunt', 14], ['khan', 1],
@@ -1795,19 +1805,44 @@ const WAVES = (() => {
     ['ogre', 19], ['wraith', 26], ['grunt', 34], ['ogre', 24], ['titan', 1]
   ];
   return order.map((o, i) => {
-    const t = CREEPS[o[0]], n = i + 1;
-    const boss = !!t.boss;
-    let hp = boss ? Math.round(1000 * Math.pow(1.5, i / 5)) : Math.round(48 * Math.pow(1.19, i) + i * 18);
-    if (boss) hp = Math.round(hp * (1 + i * 0.12));
-    const bounty = boss ? 320 + i * 34 : Math.max(6, Math.round(7 + i * 1.9));
-    return {
-      n, type: o[0], count: o[1], hp, bounty, boss,
-      speed: t.speed * (1 + Math.min(0.30, i * 0.011)),
-      gap: boss ? 60 : Math.max(9, 26 - i * 0.45),
-      bonus: 90 + i * 22
-    };
+    const raw = Array.isArray(o[0]) ? o : [o]; // normalize [type,count] to a 1-group list
+    const n = i + 1;
+    const groups = raw.map(([type, count], gi) => {
+      const t = CREEPS[type];
+      const boss = !!t.boss;
+      let hp = boss ? Math.round(1000 * Math.pow(1.5, i / 5)) : Math.round(48 * Math.pow(1.19, i) + i * 18);
+      if (boss) hp = Math.round(hp * (1 + i * 0.12));
+      hp = Math.round(hp * scale.hp);
+      const bounty = Math.round((boss ? 320 + i * 34 : Math.max(6, Math.round(7 + i * 1.9))) * scale.bounty);
+      return {
+        type, count, hp, bounty, boss,
+        speed: t.speed * (1 + Math.min(0.30, i * 0.011)),
+        gap: boss ? 60 : Math.max(9, 26 - i * 0.45),
+        delay: gi === 0 ? 0 : 90 // ticks after the previous group empties before this one starts
+      };
+    });
+    return { n, groups, boss: groups.some(g => g.boss), bonus: Math.round((90 + i * 22) * scale.bounty) };
   });
-})();
+}
+let WAVES = buildWaves('normal');
+/* Composition-derived text shared by the HUD banner and the next-wave preview
+   panel; kept as helpers so a future mixed wave prints sensibly instead of
+   requiring every call site to know about `groups`. */
+function waveSummaryText(w) {
+  let s = `${CREEPS[w.groups[0].type].name} ×${w.groups[0].count}`;
+  for (let i = 1; i < w.groups.length; i++) s += ` + ${CREEPS[w.groups[i].type].name} ×${w.groups[i].count}`;
+  return s;
+}
+function waveArmorText(w) {
+  const uniq = new Set(w.groups.map(g => CREEPS[g.type].armor));
+  return uniq.size > 1 ? 'karışık zırh' : ARMOR[CREEPS[w.groups[0].type].armor];
+}
+function waveTotalRemaining(w) {
+  if (G.phase !== 'wave') return 0;
+  let n = G.spawnLeft;
+  for (let i = G.spawnGroupIdx + 1; i < w.groups.length; i++) n += w.groups[i].count;
+  return n;
+}
 
 /* ============================================================
    GAME STATE
@@ -1820,7 +1855,8 @@ const G = {
   creeps: [], towers: [], projs: [], nextId: 1,
   spawn: { gx: 0, gy: GH >> 1 }, exit: { gx: GW - 1, gy: GH >> 1 },
   spell: [{ cd: 0 }, { cd: 0 }],  // 0 lightning, 1 blizzard
-  speed: 1, autoStart: false, endless: false
+  speed: 1, autoStart: false, endless: false,
+  spawnGroupIdx: 0, difficulty: 'normal'
 };
 
 function idxOf(gx, gy) { return gy * GW + gx; }
@@ -1987,13 +2023,26 @@ function simTick() {
   }
   if (G.phase === 'wave') {
     const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
-    if (G.spawnLeft > 0) {
+    const grp = w.groups[G.spawnGroupIdx];
+    if (grp) {
       G.spawnTimer--;
-      if (G.spawnTimer <= 0) { spawnCreep(w.type, w); G.spawnLeft--; G.spawnTimer = w.gap; }
+      if (G.spawnTimer <= 0) {
+        spawnCreep(grp.type, grp); G.spawnLeft--;
+        if (G.spawnLeft > 0) { G.spawnTimer = grp.gap; }
+        else {
+          G.spawnGroupIdx++;
+          const next = w.groups[G.spawnGroupIdx];
+          if (next) { G.spawnLeft = next.count; G.spawnTimer = next.delay; }
+        }
+      }
     } else if (G.creeps.length === 0) {
-      // wave clear
-      G.gold[0] += w.bonus; G.gold[1] += w.bonus;
-      ev('waveClear', { n: w.n, bonus: w.bonus });
+      // wave clear. Paid to each player's own purse, so halve it in co-op --
+      // same reasoning as the early-call bonus in applyCmd's 'start' branch,
+      // which this one previously missed: co-op was collecting this bonus
+      // in full for BOTH players every single wave.
+      const bonus = NET.active ? Math.round(w.bonus / 2) : w.bonus;
+      G.gold[0] += bonus; G.gold[1] += bonus;
+      ev('waveClear', { n: w.n, bonus });
       G.waveIdx++;
       if (G.waveIdx >= WAVES.length && !G.endless) { G.phase = 'won'; ev('won'); }
       else { G.phase = 'prep'; G.prepTimer = TICK_HZ * (G.autoStart ? 6 : 22); }
@@ -2009,13 +2058,15 @@ function simTick() {
 function endlessWave(i) {
   const keys = ['grunt', 'ogre', 'wraith', 'gargoyle', 'titan'];
   const t = keys[i % keys.length], boss = (i % 5 === 4);
-  return { n: i + 1, type: boss ? 'titan' : t, count: boss ? 2 : 26, boss,
-    hp: Math.round(2400 * Math.pow(1.18, i - 29)), bounty: 40 + i, speed: CREEPS[t].speed * 1.3, gap: boss ? 60 : 9, bonus: 300 + i * 20 };
+  const type = boss ? 'titan' : t;
+  const group = { type, count: boss ? 2 : 26, boss,
+    hp: Math.round(2400 * Math.pow(1.18, i - 29)), bounty: 40 + i, speed: CREEPS[t].speed * 1.3, gap: boss ? 60 : 9, delay: 0 };
+  return { n: i + 1, groups: [group], boss, bonus: 300 + i * 20 };
 }
 function startWave() {
   if (G.phase === 'wave') return;
   const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
-  G.phase = 'wave'; G.spawnLeft = w.count; G.spawnTimer = 6;
+  G.phase = 'wave'; G.spawnGroupIdx = 0; G.spawnLeft = w.groups[0].count; G.spawnTimer = 6;
   // NOTE: ev(type, o) always overwrites o.type with the event name itself, so a
   // payload field also called "type" (the creep type here) gets silently
   // clobbered to "waveStart" — CREEPS[e.type] below then resolves to undefined
@@ -2023,7 +2074,7 @@ function startWave() {
   // processEvents() call, aborting the rest of loop() (including render()) for
   // every subsequent frame: the whole game visually froze the instant the first
   // wave started. Using a differently-named field avoids the collision.
-  ev('waveStart', { n: w.n, ctype: w.type, boss: w.boss });
+  ev('waveStart', { n: w.n, ctype: w.groups[0].type, boss: w.boss });
 }
 
 function updateCreeps(dt) {
@@ -3260,8 +3311,8 @@ function drawHUD(x, W, H) {
   const label = G.phase === 'wave' ? `DALGA ${w.n}` : G.phase === 'won' ? 'ZAFER' : G.phase === 'over' ? 'YENİLGİ' : `DALGA ${w.n} HAZIR`;
   txt(x, label, W / 2, 4 + tbh / 2 - 7 * S, 15 * S, w.boss ? '#ff8a5a' : '#f2e4c4', 'center', 800);
   const sub = G.phase === 'prep'
-    ? `${CREEPS[w.type].name} ×${w.count} · ${ARMOR[CREEPS[w.type].armor]} zırh · ${Math.ceil(G.prepTimer / TICK_HZ)}s`
-    : G.phase === 'wave' ? `${CREEPS[w.type].name} · ${ARMOR[CREEPS[w.type].armor]} zırh · kalan ${G.creeps.filter(c => !c.dead).length + G.spawnLeft}` : '';
+    ? `${waveSummaryText(w)} · ${waveArmorText(w)} zırh · ${Math.ceil(G.prepTimer / TICK_HZ)}s`
+    : G.phase === 'wave' ? `${waveSummaryText(w)} · ${waveArmorText(w)} zırh · kalan ${G.creeps.filter(c => !c.dead).length + waveTotalRemaining(w)}` : '';
   txt(x, sub, W / 2, 4 + tbh / 2 + 11 * S, 10.5 * S, '#a89f8a', 'center', 600, 'system-ui');
   // speed + menu
   const spR = addRect('speed', W - 78 * S, 4 + tbh / 2 - 14 * S, 34 * S, 28 * S, () => { cmdSpeed(1); });
@@ -3371,8 +3422,8 @@ function drawHUDPortrait(x, W, H, M) {
   const label = G.phase === 'wave' ? `DALGA ${w.n}` : G.phase === 'won' ? 'ZAFER' : G.phase === 'over' ? 'YENİLGİ' : `DALGA ${w.n} HAZIR`;
   txt(x, label, W / 2, wy + 13, 14, w.boss ? '#ff8a5a' : '#f2e4c4', 'center', 800);
   const sub = G.phase === 'prep'
-    ? `${CREEPS[w.type].name} ×${w.count} · ${ARMOR[CREEPS[w.type].armor]} zırh · ${Math.ceil(G.prepTimer / TICK_HZ)}s`
-    : G.phase === 'wave' ? `${CREEPS[w.type].name} · kalan ${G.creeps.filter(c => !c.dead).length + G.spawnLeft}` : '';
+    ? `${waveSummaryText(w)} · ${waveArmorText(w)} zırh · ${Math.ceil(G.prepTimer / TICK_HZ)}s`
+    : G.phase === 'wave' ? `${waveSummaryText(w)} · kalan ${G.creeps.filter(c => !c.dead).length + waveTotalRemaining(w)}` : '';
   txt(x, sub, W / 2, wy + 27, 9.5, '#a89f8a', 'center', 600, 'system-ui');
   if (NET.active) txt(x, NET.status, W - 14, wy + 27, 8.5, '#8fd6a0', 'right', 600, 'system-ui');
 
@@ -3445,7 +3496,7 @@ function drawInfoPanelPortrait(x, px, py, w, h) {
       L('Zemine dokun → kur · düğmeye yeniden dokun → iptal', 3, 9, '#7f8a72', 'system-ui');
     } else {
       const wv = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
-      const ct = CREEPS[wv.type];
+      const ct = CREEPS[wv.groups[0].type];
       txt(x, 'Kule seç, labirent ör, kapıyı koru.', px + 10, py + 14, 11, '#ffe0a0', 'left', 800);
       L(`Sıradaki: ${ct.name} — ${ARMOR[ct.armor]} zırh${ct.air ? ' · uçar' : ''}`, 1, 10, '#e0b070', 'system-ui');
       L(counterHint(ct.armor), 2, 9, '#9a917f', 'system-ui');
@@ -3485,7 +3536,7 @@ function drawInfoPanel(x, px, py, w, h, S) {
       txt(x, 'ALTAY', px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
       txt(x, 'Kule seç, labirent ör, kapıyı koru.', px + 10, py + 33 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
       const wv = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
-      const ct = CREEPS[wv.type];
+      const ct = CREEPS[wv.groups[0].type];
       txt(x, `Sıradaki: ${ct.name} — ${ARMOR[ct.armor]} zırh${ct.air ? ' · uçar' : ''}`, px + 10, py + 50 * S, 9.5 * S, '#e0b070', 'left', 600, 'system-ui');
       txt(x, counterHint(ct.armor), px + 10, py + 66 * S, 9 * S, '#9a917f', 'left', 600, 'system-ui');
       txt(x, `Öldürülen ${G.killed} · Sızan ${G.leaked}`, px + 10, py + h - 12 * S, 8.5 * S, '#7f8a72', 'left', 600, 'system-ui');
@@ -3557,7 +3608,7 @@ function drawEndScreen(x, W, H, S) {
   txt(x, won ? `${WAVES.length} dalga geri püskürtüldü.` : `Dalga ${(WAVES[G.waveIdx] || { n: 30 }).n}'de düştün.`, W / 2, H / 2 - 18 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
   txt(x, `Öldürülen ${G.killed} · Sızan ${G.leaked} · Puan ${G.score[NET.me] | 0}`, W / 2, H / 2 + 8 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
   const ebw = Math.max(180, 180 * S), ebh = Math.max(TOUCH_MIN + 4, 44 * S);
-  const r = addRect('again', W / 2 - ebw / 2, H / 2 + 34 * S, ebw, ebh, () => location.reload());
+  const r = addRect('again', W / 2 - ebw / 2, H / 2 + 34 * S, ebw, ebh, () => issue({ k: 'restart' }));
   panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: true, r: 8 });
   txt(x, 'YENİDEN', r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#ffe08a', 'center', 800);
   x.restore();
@@ -3574,7 +3625,40 @@ function issue(cmd) {
   if (!NET.active || NET.isHost) applyCmd(cmd, NET.me);
   else NET.send({ t: 'cmd', c: cmd });
 }
+/* Rebuilds a run without location.reload(), so difficulty/map pickers (and
+   the plain "Baştan başla" button) don't have to tear down the PeerJS
+   connection to start over. Only ever called host-side (see 'restart' in
+   applyCmd) -- the guest receives the reset through the next snapshot: G.cr/
+   G.tw are wholesale-replaced by applySnapshot already, and NET.gridDirty
+   below carries the regenerated grid across on the next send. */
+function resetRun(seed) {
+  G.mapSeed = seed !== undefined ? seed : (G.mapSeed !== undefined ? G.mapSeed : 20260803);
+  WAVES = buildWaves(G.difficulty);
+  G.tick = 0; G.phase = 'prep';
+  G.lives = (DIFFICULTY[G.difficulty] || DIFFICULTY.normal).lives;
+  G.waveIdx = 0; G.spawnGroupIdx = 0; G.spawnLeft = 0; G.spawnTimer = 0;
+  G.prepTimer = 30 * TICK_HZ;
+  G.gold = [SOLO_START_GOLD, SOLO_START_GOLD];
+  if (NET.active) setCoopEconomy();
+  G.score = [0, 0]; G.leaked = 0; G.killed = 0;
+  G.creeps = []; G.towers = []; G.projs = []; G.nextId = 1;
+  G.spell[0].cd = 0; G.spell[1].cd = 0;
+  G.speed = 1;
+  EVQ.length = 0;
+  UI.sel = null; UI.buildKind = null; UI.spellAim = null; UI.toasts.length = 0;
+  FX.clear();  // also wipes FX.decal, so blood/scorch marks don't survive a restart
+  FX.shake = 0; FX.shakeA = 0; FX.flash = 0;
+  generateMap(G.mapSeed);  // also rebuilds G.towerAt/G.dist and runs computeFlow
+  placeDecor();
+  bakeTerrain(G.grid);
+  R.fitCamera();
+  NET.gridDirty = true;
+}
 function applyCmd(c, who) {
+  // 'restart' must work even when the run has ended (G.phase 'over'/'won' is
+  // exactly when the end-screen button needs it), so it is checked before the
+  // phase gate below rather than falling under it like every other command.
+  if (c.k === 'restart') { resetRun(); return; }
   if (G.phase === 'over' || G.phase === 'won') return;
   if (c.k === 'build') {
     const res = placeTower(c.kind, c.gx, c.gy, who);
@@ -3777,13 +3861,13 @@ function snapshot() {
   for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest]);
   const pr = [];
   for (const p of G.projs) pr.push([['arrow', 'shell', 'shard', 'blob'].indexOf(p.kind), Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.ang * 100) / 100]);
-  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ev: EVQ.slice() };
+  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ev: EVQ.slice() };
   if (NET.gridDirty) { s.g = Array.from(G.grid); NET.gridDirty = false; }
   return s;
 }
 function applySnapshot(s) {
   G.tick = s.k; G.phase = s.ph; G.lives = s.lv; G.gold = s.gd; G.waveIdx = s.wi;
-  G.prepTimer = s.pt; G.spawnLeft = s.sl; G.killed = s.kd; G.leaked = s.lk; G.score = s.sc;
+  G.prepTimer = s.pt; G.spawnLeft = s.sl; G.spawnGroupIdx = s.sg | 0; G.killed = s.kd; G.leaked = s.lk; G.score = s.sc;
   if (s.sd) G.speed = s.sd;
   G.spell[0].cd = s.sp[0]; G.spell[1].cd = s.sp[1];
   if (s.g) { G.grid = Uint8Array.from(s.g); computeFlow(); }
@@ -3931,7 +4015,8 @@ function bootstrap() {
   const cv = document.getElementById('game');
   R.init(cv);
   FX.init();
-  generateMap(20260803);
+  G.mapSeed = 20260803;
+  generateMap(G.mapSeed);
   const jobs = [];
   for (const k in CREEPS) jobs.push({ label: CREEPS[k].name, fn: () => { R.sprites.units[k] = bakeUnit(CREEPS[k]); } });
   for (const k in TOWERS) for (let l = 0; l < 3; l++) jobs.push({ label: TOWERS[k].names[l], fn: () => { R.sprites.towers[k + l] = bakeTower(k, l); } });
@@ -4043,7 +4128,7 @@ function wireShell() {
   $('mSfx').onclick = () => { Audio2.enabled = !Audio2.enabled; syncMenu(); };
   $('mAuto').onclick = () => { G.autoStart = !G.autoStart; syncMenu(); };
   $('mEnd').onclick = () => { G.endless = !G.endless; syncMenu(); };
-  $('mRestart').onclick = () => location.reload();
+  $('mRestart').onclick = () => { issue({ k: 'restart' }); closeMenu(); };
   $('mHelp').onclick = () => { $('help').classList.toggle('hidden'); };
   $('helpClose').onclick = () => $('help').classList.add('hidden');
   $('btnHelp').onclick = () => $('help').classList.remove('hidden');
