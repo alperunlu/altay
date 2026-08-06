@@ -1693,7 +1693,13 @@ const TOWERS = {
       { dmg: 13, rate: 0.62, range: 132, sell: 42 },
       { dmg: 27, rate: 0.52, range: 148, cost: 85, sell: 100 },
       { dmg: 52, rate: 0.42, range: 168, cost: 190, sell: 230 }
-    ], names: ['Ok Kulesi', 'Yaylı Kule', 'Alp Nişancısı']
+    ], names: ['Ok Kulesi', 'Yaylı Kule', 'Alp Nişancısı'],
+    /* Phase 2, item 3: top-level (lv[2]) owner-triggered active ability.
+       Instant self-effect -- no targeting, fires immediately on click. The
+       Alp Nişancısı doubles its own draw speed for a few seconds: a burst
+       window, not a permanent stat bump, so it rewards timing it against a
+       fat pack instead of just being free extra DPS on every tick. */
+    ability: { name: 'Nişan Al', desc: 'Ateş hızını 5 sn boyunca ikiye katlar.', cd: 20, targeted: false, mult: 0.5, dur: 5 }
   },
   cannon: {
     name: 'Top Kulesi', key: '2', cost: 115, dmgType: 'siege', air: false, proj: 'shell', splash: 48,
@@ -1702,7 +1708,12 @@ const TOWERS = {
       { dmg: 46, rate: 1.55, range: 152, sell: 80 },
       { dmg: 92, rate: 1.42, range: 166, cost: 150, sell: 185 },
       { dmg: 178, rate: 1.28, range: 184, cost: 320, sell: 400 }
-    ], names: ['Top Kulesi', 'Kuşatma Topu', 'Balyemez']
+    ], names: ['Top Kulesi', 'Kuşatma Topu', 'Balyemez'],
+    /* Point-targeted ability -- reuses the Q-spell's UI.spellAim click-to-aim
+       flow (see triggerSpell/bindInput). An instant, off-cycle heavy shell at
+       the aimed point: a burst effect on its own cooldown, independent of the
+       tower's normal fire timer, not just "more damage per normal shot". */
+    ability: { name: 'Gülle Yağmuru', desc: 'Hedef noktaya ağır gülle indirir, geniş alan hasarı verir.', cd: 25, targeted: true, range: 260, radius: 95, dmgMult: 3 }
   },
   frost: {
     name: 'Buz Kulesi', key: '3', cost: 105, dmgType: 'magic', air: true, proj: 'shard',
@@ -1731,7 +1742,12 @@ const TOWERS = {
       { dmg: 38, rate: 1.95, range: 178, sell: 150 },
       { dmg: 74, rate: 1.78, range: 194, cost: 260, sell: 335 },
       { dmg: 142, rate: 1.60, range: 214, cost: 520, sell: 675 }
-    ], names: ['Yıldırım Kulesi', 'Gök Direği', 'Tengri Sütunu']
+    ], names: ['Yıldırım Kulesi', 'Gök Direği', 'Tengri Sütunu'],
+    /* Instant self-effect, but unlike the arrow's self-buff this one radiates
+       outward: a support burst that speeds up every tower (any owner) caught
+       in the ring, not just itself -- a debuff/buff-application ability
+       rather than "more damage", and deliberately co-op-flavoured. */
+    ability: { name: 'Gök Çemberi', desc: 'Çevredeki tüm kulelerin ateş hızını 6 sn artırır.', cd: 30, targeted: false, radius: 220, mult: 0.55, dur: 6 }
   }
 };
 const TOWER_KEYS = ['arrow', 'cannon', 'frost', 'poison', 'storm'];
@@ -2050,7 +2066,13 @@ function placeTower(kind, gx, gy, owner) {
   const t = {
     id: G.nextId++, kind, lvl: 0, gx, gy, x: gx * TILE + TILE / 2, y: gy * TILE + TILE / 2,
     cd: 0, angle: -Math.PI / 2, owner, kills: 0, dmg: 0, invest: def.cost, target: 0,
-    mode: 0, recoil: 0, buildT: TICK_HZ * 0.5
+    mode: 0, recoil: 0, buildT: TICK_HZ * 0.5,
+    // Phase 2 item 3: per-tower active-ability state. acd is the ability's own
+    // cooldown (seconds); buffT/buffMult are a generic "temporarily firing
+    // faster" effect any tower can carry, regardless of whether ITS OWN kind
+    // has an ability -- the storm tower's Gök Çemberi applies these to
+    // towers of other kinds too, not just to itself.
+    acd: 0, buffT: 0, buffMult: 1
   };
   G.towers.push(t); G.towerAt[i] = t.id;
   computeFlow();
@@ -2323,6 +2345,8 @@ function updateTowers(dt) {
   for (const t of G.towers) {
     if (t.buildT > 0) { t.buildT--; continue; }
     if (t.recoil > 0) t.recoil -= dt * 4;
+    if (t.acd > 0) t.acd -= dt;
+    if (t.buffT > 0) { t.buffT -= dt; if (t.buffT <= 0) { t.buffT = 0; t.buffMult = 1; } }
     const st = towerStat(t), def = TOWERS[t.kind];
     if (t.cd > 0) t.cd -= dt;
     let tgt = t.target ? G.creeps.find(c => c.id === t.target && !c.dead) : null;
@@ -2334,7 +2358,9 @@ function updateTowers(dt) {
     const px = tgt.x + tgt.vx * flight, py = (tgt.y - tgt.z) + tgt.vy * flight;
     t.angle = angLerp(t.angle, Math.atan2(py - t.y, px - t.x), 0.30);
     if (t.cd > 0) continue;
-    t.cd = st.rate; t.recoil = 1;
+    // buffT/buffMult (see placeTower) shortens the reload while active --
+    // an active-ability overcharge, distinct from the tower's static level stats.
+    t.cd = st.rate * (t.buffT > 0 ? t.buffMult : 1); t.recoil = 1;
     fire(t, tgt, px, py);
   }
 }
@@ -2447,6 +2473,58 @@ function castSpell(idx, x, y, owner) {
     ev('sfx', { name: 'frost', x: WORLD_W / 2, y: WORLD_H / 2 });
   }
   return true;
+}
+
+/* ---------- tower-owned active abilities (Phase 2, item 3) ----------
+   Per-tower, per-owner, unlike the shared global spells above: only usable
+   once a tower reaches its top level (lv[2]), gated behind its OWN
+   cooldown (t.acd, a new synced snapshot slot -- see snapshot()/
+   applySnapshot()), and only its owner may trigger it (see applyCmd's
+   'ability' branch, mirroring the existing 'mode' cycling's owner check). */
+function abilityOf(t) { return t.lvl === 2 ? TOWERS[t.kind].ability : null; }
+function useAbility(t, owner, x, y) {
+  if (t.owner !== owner) return { ok: false, why: 'Bu kule senin değil' };
+  const ab = abilityOf(t);
+  if (!ab) return { ok: false, why: 'Yetenek yok' };
+  if (t.acd > 0) return { ok: false, why: 'Bekleme süresi dolmadı' };
+  if (ab.targeted) {
+    if (typeof x !== 'number' || typeof y !== 'number') return { ok: false, why: 'Hedef gerekli' };
+    if (dist2(t.x, t.y, x, y) > ab.range * ab.range) return { ok: false, why: 'Menzil dışı' };
+  }
+  t.acd = ab.cd;
+  if (t.kind === 'arrow') {
+    // instant self-effect: overcharge its own reload for `dur` seconds.
+    t.buffT = ab.dur; t.buffMult = ab.mult;
+    ev('abilFx', { ax: t.x, ay: t.y - 30, kind: 'arrow' });
+    ev('sfx', { name: 'ui', x: t.x, y: t.y });
+  } else if (t.kind === 'cannon') {
+    // point-targeted burst: an instant heavy shell at the aimed point,
+    // independent of the tower's own fire cycle -- ground-only, like the
+    // tower's normal shell (def.air === false).
+    const r2 = ab.radius * ab.radius, st = towerStat(t);
+    for (const c of G.creeps) {
+      if (c.dead || c.air) continue;
+      const d2 = dist2(x, y, c.x, c.y - c.z);
+      if (d2 <= r2) {
+        const f = 1 - Math.sqrt(d2) / ab.radius * 0.5;
+        damage(c, st.dmg * ab.dmgMult * f, TOWERS.cannon.dmgType, owner, t);
+      }
+    }
+    ev('explosion', { x, y, r: ab.radius, owner });
+    ev('sfx', { name: 'boom', x, y });
+  } else if (t.kind === 'storm') {
+    // instant self-effect with an area of effect on OTHER towers: a support
+    // buff, not damage -- every tower (any owner) in range gets the same
+    // reload-speed buff the arrow ability gives itself.
+    const r2 = ab.radius * ab.radius;
+    for (const o of G.towers) {
+      if (dist2(t.x, t.y, o.x, o.y) > r2) continue;
+      o.buffT = Math.max(o.buffT, ab.dur); o.buffMult = ab.mult;
+    }
+    ev('abilFx', { ax: t.x, ay: t.y - 30, kind: 'storm' });
+    ev('sfx', { name: 'thunder', x: t.x, y: t.y });
+  }
+  return { ok: true };
 }
 /* ============================================================
    PART 4: EFFECTS — particles, decals, lights, shake
@@ -2822,6 +2900,10 @@ function render(dtReal, alpha) {
   // 5. selection range
   if (UI.sel) { const st = towerStat(UI.sel); drawRange(x, UI.sel.x, UI.sel.y, st.range, 'rgba(120,220,255,0.85)'); }
   if (UI.spellAim === 0) drawRange(x, UI.aimW[0], UI.aimW[1], SPELLS[0].r, 'rgba(220,180,255,0.9)');
+  if (UI.spellAim === 'abil') {
+    const abt = G.towers.find(tw => tw.id === UI.abilId), ab = abt && abilityOf(abt);
+    if (ab) drawRange(x, UI.aimW[0], UI.aimW[1], ab.radius, 'rgba(255,170,90,0.9)');
+  }
 
   // 6. entities sorted by depth
   const drawables = [];
@@ -3330,7 +3412,7 @@ function drawBlizzard(x, W, H) {
    PART 6: HUD, INPUT, NET, LOOP
    ============================================================ */
 const UI = {
-  buildKind: null, sel: null, spellAim: null,
+  buildKind: null, sel: null, spellAim: null, abilId: null,
   aim: [0, 0], aimW: [0, 0], placeOK: true,
   toasts: [], rects: [], scale: 1, panelH: 128, hoverBtn: null,
   hudTop: 1e9, hudBottom: 54,
@@ -3658,10 +3740,20 @@ function drawInfoPanelPortrait(x, px, py, w, h) {
   txt(x, fitText(x, `${st.dmg} hasar · ${(1 / st.rate).toFixed(1)}/sn · ${st.range} menzil · ${t.kills} kelle`, maxW, 9.5, 'system-ui', 600),
     px + 10, py + 26, 9.5, '#c9bfa6', 'left', 600, 'system-ui');
   const modeNames = ['ilk', 'güçlü', 'zayıf', 'yakın'];
-  const bw = (w - 20 - 12) / 3, byy = py + h - TOUCH_MIN - 2;
-  const uR = addRect('up', px + 10, byy, bw, TOUCH_MIN, () => cmdUpgrade());
-  const sR = addRect('sell', px + 16 + bw, byy, bw, TOUCH_MIN, () => cmdSell());
-  const mR = addRect('mode', px + 22 + bw * 2, byy, bw, TOUCH_MIN, () => cmdMode());
+  // 4th button (ability) only when this tower is top-level AND its kind has
+  // one -- see TOWERS[k].ability / abilityOf(). Width formula generalizes
+  // the original 3-button math (bw = (w-20-12)/3) to N buttons at a fixed
+  // 6px gap and 10px outer margin, so the touch targets stay >= TOUCH_MIN
+  // (44px) even with a 4th button added -- portrait's history of overlapping
+  // HUD rects is exactly why this is a shared formula, not two hand-tuned
+  // layouts that can drift apart.
+  const ab = abilityOf(t);
+  const n = ab ? 4 : 3;
+  const bw = (w - 20 - 6 * (n - 1)) / n, byy = py + h - TOUCH_MIN - 2;
+  const rectAt = i => px + 10 + i * (bw + 6);
+  const uR = addRect('up', rectAt(0), byy, bw, TOUCH_MIN, () => cmdUpgrade());
+  const sR = addRect('sell', rectAt(1), byy, bw, TOUCH_MIN, () => cmdSell());
+  const mR = addRect('mode', rectAt(2), byy, bw, TOUCH_MIN, () => cmdMode());
   const canUp = nxt && G.gold[NET.me] >= nxt.cost && t.owner === NET.me;
   panel(x, uR.x, uR.y, uR.w, uR.h, { r: 5, gold: canUp });
   txt(x, nxt ? `YÜKSELT ${nxt.cost}` : 'MAKS', uR.x + uR.w / 2, uR.y + uR.h / 2, 9.5, canUp ? '#ffd76a' : '#8a8578', 'center', 800);
@@ -3669,6 +3761,12 @@ function drawInfoPanelPortrait(x, px, py, w, h) {
   txt(x, `SAT ${Math.round(t.invest * 0.72)}`, sR.x + sR.w / 2, sR.y + sR.h / 2, 9.5, '#e0c9a0', 'center', 800);
   panel(x, mR.x, mR.y, mR.w, mR.h, { r: 5 });
   txt(x, 'HEDEF: ' + modeNames[t.mode], mR.x + mR.w / 2, mR.y + mR.h / 2, 9, '#c9d6e0', 'center', 800);
+  if (ab) {
+    const aR = addRect('abil', rectAt(3), byy, bw, TOUCH_MIN, () => cmdAbility(t));
+    const ready = t.acd <= 0, aiming = UI.spellAim === 'abil' && UI.abilId === t.id;
+    panel(x, aR.x, aR.y, aR.w, aR.h, { r: 5, gold: ready, hi: aiming });
+    txt(x, ready ? ab.name : Math.ceil(t.acd) + 's', aR.x + aR.w / 2, aR.y + aR.h / 2, 9, ready ? '#ffd76a' : '#8a8578', 'center', 800);
+  }
 }
 function drawInfoPanel(x, px, py, w, h, S) {
   panel(x, px, py, w, h, { r: 7 });
@@ -3697,10 +3795,16 @@ function drawInfoPanel(x, px, py, w, h, S) {
   txt(x, `${st.dmg} hasar · ${(1 / st.rate).toFixed(1)}/sn · ${st.range} menzil`, px + 10, py + 32 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
   txt(x, `DPS ${(st.dmg / st.rate).toFixed(0)} · ${DMGT[def.dmgType]} · ${t.kills} kelle`, px + 10, py + 47 * S, 9.5 * S, '#9a917f', 'left', 600, 'system-ui');
   const modeNames = ['ilk', 'güçlü', 'zayıf', 'yakın'];
-  const bw = (w - 26) / 3;
-  const uR = addRect('up', px + 8, py + h - 30 * S, bw, 24 * S, () => cmdUpgrade());
-  const sR = addRect('sell', px + 12 + bw, py + h - 30 * S, bw, 24 * S, () => cmdSell());
-  const mR = addRect('mode', px + 16 + bw * 2, py + h - 30 * S, bw, 24 * S, () => cmdMode());
+  // 4th button (ability) mirrors drawInfoPanelPortrait's layout math -- same
+  // generalized N-button formula, desktop's original constants (gap 4, outer
+  // margin 8) in place of portrait's (gap 6, margin 10).
+  const ab = abilityOf(t);
+  const n = ab ? 4 : 3;
+  const bw = (w - 16 - 4 * (n - 1)) / n, byy = py + h - 30 * S;
+  const rectAt = i => px + 8 + i * (bw + 4 * S);
+  const uR = addRect('up', rectAt(0), byy, bw, 24 * S, () => cmdUpgrade());
+  const sR = addRect('sell', rectAt(1), byy, bw, 24 * S, () => cmdSell());
+  const mR = addRect('mode', rectAt(2), byy, bw, 24 * S, () => cmdMode());
   const canUp = nxt && G.gold[NET.me] >= nxt.cost && t.owner === NET.me;
   panel(x, uR.x, uR.y, uR.w, uR.h, { r: 5, gold: canUp });
   txt(x, nxt ? `YÜKSELT ${nxt.cost}` : 'MAKS', uR.x + uR.w / 2, uR.y + uR.h / 2, 9 * S, canUp ? '#ffd76a' : '#8a8578', 'center', 800);
@@ -3708,6 +3812,12 @@ function drawInfoPanel(x, px, py, w, h, S) {
   txt(x, `SAT ${Math.round(t.invest * 0.72)}`, sR.x + sR.w / 2, sR.y + sR.h / 2, 9 * S, '#e0c9a0', 'center', 800);
   panel(x, mR.x, mR.y, mR.w, mR.h, { r: 5 });
   txt(x, 'HEDEF: ' + modeNames[t.mode], mR.x + mR.w / 2, mR.y + mR.h / 2, 8.5 * S, '#c9d6e0', 'center', 800);
+  if (ab) {
+    const aR = addRect('abil', rectAt(3), byy, bw, 24 * S, () => cmdAbility(t));
+    const ready = t.acd <= 0, aiming = UI.spellAim === 'abil' && UI.abilId === t.id;
+    panel(x, aR.x, aR.y, aR.w, aR.h, { r: 5, gold: ready, hi: aiming });
+    txt(x, ready ? ab.name : Math.ceil(t.acd) + 's', aR.x + aR.w / 2, aR.y + aR.h / 2, 8.5 * S, ready ? '#ffd76a' : '#8a8578', 'center', 800);
+  }
 }
 function counterHint(armor) {
   const best = { 0: 'Delici/normal iyi, kuşatma vasat.', 1: 'Ok Kulesi biçer geçer.', 2: 'Zehir Kulesi en verimli.', 3: 'Buz ve Yıldırım büyüsü iki kat vurur.', 4: 'Top Kulesi şart; ok işe yaramaz.' };
@@ -3768,7 +3878,7 @@ function drawEndScreen(x, W, H, S) {
    ============================================================ */
 function selectBuild(k) {
   if (UI.buildKind === k) { UI.buildKind = null; return; }
-  UI.buildKind = k; UI.sel = null; UI.spellAim = null; Audio2.play('ui');
+  UI.buildKind = k; UI.sel = null; UI.spellAim = null; UI.abilId = null; Audio2.play('ui');
 }
 function issue(cmd) {
   if (!NET.active || NET.isHost) applyCmd(cmd, NET.me);
@@ -3793,7 +3903,7 @@ function resetRun(seed) {
   G.spell[0].cd = 0; G.spell[1].cd = 0;
   G.speed = 1;
   EVQ.length = 0;
-  UI.sel = null; UI.buildKind = null; UI.spellAim = null; UI.toasts.length = 0;
+  UI.sel = null; UI.buildKind = null; UI.spellAim = null; UI.abilId = null; UI.toasts.length = 0;
   FX.clear();  // also wipes FX.decal, so blood/scorch marks don't survive a restart
   FX.shake = 0; FX.shakeA = 0; FX.flash = 0;
   generateMap(G.mapSeed);  // also rebuilds G.towerAt/G.dist and runs computeFlow
@@ -3822,6 +3932,10 @@ function applyCmd(c, who) {
     if (res.ok) { ev('sell', { x: t.x, y: t.y }); ev('sfx', { name: 'sell' }); NET.gridDirty = true; if (UI.sel === t) UI.sel = null; }
   } else if (c.k === 'mode') {
     const t = G.towers.find(t => t.id === c.id); if (t && t.owner === who) t.mode = (t.mode + 1) % 4;
+  } else if (c.k === 'ability') {
+    const t = G.towers.find(t => t.id === c.id); if (!t) return;
+    const res = useAbility(t, who, c.x, c.y);
+    if (!res.ok && who === NET.me) { UI.toast(res.why, '#ff9a8a'); Audio2.play('deny'); }
   } else if (c.k === 'spell') {
     if (castSpell(c.i, c.x, c.y, who)) { if (c.i === 1) ev('blizzard', {}); }
   } else if (c.k === 'speed') {
@@ -3848,6 +3962,23 @@ function cmdStartWave() { issue({ k: 'start' }); }
 function cmdUpgrade() { if (UI.sel) issue({ k: 'upgrade', id: UI.sel.id }); }
 function cmdSell() { if (UI.sel) { issue({ k: 'sell', id: UI.sel.id }); UI.sel = null; } }
 function cmdMode() { if (UI.sel) issue({ k: 'mode', id: UI.sel.id }); }
+/* Tower-owned ability trigger. Mirrors triggerSpell's aim-toggle shape --
+   a targeted ability arms UI.spellAim (reusing the exact same click-to-aim
+   pointerup/render path as the Q spell, see bindInput and the R.render
+   range-preview call) instead of inventing a parallel targeting system; an
+   untargeted (instant/self) ability fires immediately through issue(). */
+function cmdAbility(t) {
+  const ab = abilityOf(t);
+  if (!ab) return;
+  if (t.acd > 0) { Audio2.play('deny'); return; }
+  if (ab.targeted) {
+    const arming = !(UI.spellAim === 'abil' && UI.abilId === t.id);
+    UI.spellAim = arming ? 'abil' : null; UI.abilId = arming ? t.id : null;
+    UI.buildKind = null; Audio2.play('ui');
+  } else {
+    issue({ k: 'ability', id: t.id }); Audio2.play('ui');
+  }
+}
 function triggerSpell(i) {
   if (G.spell[i].cd > 0) { Audio2.play('deny'); return; }
   if (i === 1) { issue({ k: 'spell', i: 1, x: 0, y: 0 }); Audio2.play('ui'); }
@@ -3908,6 +4039,7 @@ function bindInput(cv) {
     const w = R.screenToWorld(p[0], p[1]);
     const gx = (w[0] / TILE) | 0, gy = (w[1] / TILE) | 0;
     if (UI.spellAim === 0) { issue({ k: 'spell', i: 0, x: w[0], y: w[1] }); UI.spellAim = null; return; }
+    if (UI.spellAim === 'abil') { issue({ k: 'ability', id: UI.abilId, x: w[0], y: w[1] }); UI.spellAim = null; UI.abilId = null; return; }
     const t = inGrid(gx, gy) ? findTower(gx, gy) : null;
     // Selecting an existing tower wins over building. Build mode stays armed
     // after a placement so several towers can go down in a row, but that used
@@ -3938,7 +4070,7 @@ function bindInput(cv) {
     const k = e.key.toLowerCase();
     const i = ['1', '2', '3', '4', '5'].indexOf(e.key);
     if (i >= 0) selectBuild(TOWER_KEYS[i]);
-    else if (k === 'escape') { UI.buildKind = null; UI.sel = null; UI.spellAim = null; }
+    else if (k === 'escape') { UI.buildKind = null; UI.sel = null; UI.spellAim = null; UI.abilId = null; }
     else if (k === 'u') cmdUpgrade();
     else if (k === 's') cmdSell();
     else if (k === 'x') cmdMode();
@@ -3973,6 +4105,7 @@ function processEvents(list) {
       case 'suppress': FX.suppress(e.x, e.y, e.tx, e.ty); break;
       case 'healTick': FX.healTick(e.x, e.y); break;
       case 'smite': FX.smite(e.x, e.y, e.r); break;
+      case 'abilFx': FX.ring(e.ax, e.ay, 4, 46, e.kind === 'storm' ? '160,220,255' : '255,200,120', 0.5, 3); break;
       case 'blizzard': FX.blizzard = 1.4; FX.blizzardBurst(e.x || WORLD_W / 2, e.y || WORLD_H / 2); break;
       case 'kill':
         FX.death(e.x, e.y, e.boss, e.ctype);
@@ -4008,7 +4141,10 @@ function snapshot() {
   const cr = [];
   for (const c of G.creeps) cr.push([c.id, CIDX.indexOf(c.type), Math.round(c.x * 4) / 4, Math.round(c.y * 4) / 4, Math.round(c.z), Math.round(c.hp), c.maxHp, c.dir, c.frame, c.slow > 0 ? 1 : 0, c.dotT > 0 ? 1 : 0, c.dead ? 1 : 0, Math.round(c.deathT * 20), Math.round(c.vx), Math.round(c.vy)]);
   const tw = [];
-  for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest]);
+  // slot 12 (t.acd, the tower-owned ability's own cooldown in seconds) is
+  // APPENDED here -- constraint: appending is safe, existing slots 0-11 keep
+  // their positions so applySnapshot's positional unpack below stays valid.
+  for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest, Math.round(t.acd * 20) / 20]);
   const pr = [];
   for (const p of G.projs) pr.push([['arrow', 'shell', 'shard', 'blob'].indexOf(p.kind), Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.ang * 100) / 100]);
   const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ev: EVQ.slice() };
@@ -4039,6 +4175,7 @@ function applySnapshot(s) {
     const t = oldT.get(a[0]) || { id: a[0] };
     t.kind = KIDX[a[1]]; t.lvl = a[2]; t.gx = a[3]; t.gy = a[4]; t.angle = a[5]; t.owner = a[6];
     t.recoil = a[7]; t.mode = a[8]; t.kills = a[9]; t.buildT = a[10]; t.invest = a[11];
+    t.acd = a[12] || 0; // new slot (appended, see snapshot()) -- ability cooldown
     t.x = t.gx * TILE + TILE / 2; t.y = t.gy * TILE + TILE / 2; t.dmg = t.dmg || 0;
     return t;
   });
