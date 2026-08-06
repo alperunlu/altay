@@ -1237,20 +1237,29 @@ function drawWeapon(x, def, hx, hy, fx, fy, s, ph) {
 /* ============================================================
    TOWER SPRITE BAKERY
    ============================================================ */
-function bakeTower(kind, lvl) {
+/* `branch` (0/1, or undefined for the ordinary lv0-2 sprites) reuses the
+   lv2 geometry -- drawTowerBase/drawTowerTurret already carry the tower's
+   fullest silhouette at that level, so a branch sprite doesn't need its own
+   hand-drawn shape -- and layers a branch-specific trim recolour (T.trim
+   inside drawTowerBase, see BRANCH_TRIM) plus a translucent lightPass wash
+   (BRANCH_TINT) on top, cheap enough that boot time barely moves (measured:
+   see the boot-time note in the verification pass). */
+function bakeTower(kind, lvl, branch) {
   const S = 96;
   const base = makeCanvas(S, S), turret = makeCanvas(S, S);
   base.x.translate(S / 2, S * 0.66); turret.x.translate(S / 2, S / 2);
-  drawTowerBase(base.x, kind, lvl);
+  const gl = branch != null ? 2 : lvl;
+  const tint = branch != null ? BRANCH_TINT[kind][branch] : null;
+  drawTowerBase(base.x, kind, gl, branch);
   outlineSprite(base.c, 'rgba(6,4,9,0.97)', 2.0);
-  rimLight(base.c, LIGHT.x * 2.1, LIGHT.y * 2.1, 'rgba(255,244,208,1)', 0.60 + lvl * 0.06);
-  lightPass(base.c, 0.16, 0.14);
-  drawTowerTurret(turret.x, kind, lvl);
+  rimLight(base.c, LIGHT.x * 2.1, LIGHT.y * 2.1, 'rgba(255,244,208,1)', 0.60 + gl * 0.06);
+  lightPass(base.c, 0.16, 0.14, tint);
+  drawTowerTurret(turret.x, kind, gl);
   outlineSprite(turret.c, 'rgba(6,4,9,0.97)', 1.9);
-  rimLight(turret.c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.64 + lvl * 0.06);
-  lightPass(turret.c, 0.14, 0.10);
+  rimLight(turret.c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.64 + gl * 0.06);
+  lightPass(turret.c, 0.14, 0.10, tint);
   // same saturation/contrast punch-up as unit sprites for silhouette readability
-  return { base: boostContrast(base.c), turret: boostContrast(turret.c), S, pivot: TOWER_PIVOT(lvl) };
+  return { base: boostContrast(base.c), turret: boostContrast(turret.c), S, pivot: TOWER_PIVOT(gl) };
 }
 function TOWER_PIVOT(lvl) { return 34 + lvl * 9; }
 /* tapered masonry wall in 3/4 view */
@@ -1291,7 +1300,7 @@ function crenellations(x, y, r, n, base, h) {
     poly(x, [[-2.6, 0], [2.6, 0], [2.2, -h], [-2.2, -h]], shade(base, py > 0 ? 1.2 : 0.85), 0, px, y + py);
   }
 }
-function drawTowerBase(x, kind, lvl) {
+function drawTowerBase(x, kind, lvl, branch) {
   const H = TOWER_PIVOT(lvl);
   const T = {
     arrow: { stone: [122, 116, 104], wood: [128, 88, 48], trim: [214, 176, 88] },
@@ -1300,6 +1309,10 @@ function drawTowerBase(x, kind, lvl) {
     poison: { stone: [104, 106, 84], wood: [132, 168, 74], trim: [206, 198, 168] },
     storm: { stone: [72, 64, 94], wood: [124, 96, 190], trim: [226, 190, 110] }
   }[kind];
+  // branch sprites (see bakeTower) recolour the accent trim so a branched
+  // tower's gold banding/gallery rail/etc reads as a distinct variant of the
+  // same lv2 silhouette, without a second hand-drawn geometry per branch.
+  if (branch != null) T.trim = BRANCH_TRIM[kind][branch];
   // footing
   ell(x, 0, 6, 22, 12, shade(T.stone, 0.5));
   ell(x, 0, 3, 20, 10.5, shade(T.stone, 0.85));
@@ -1699,7 +1712,26 @@ const TOWERS = {
        Alp Nişancısı doubles its own draw speed for a few seconds: a burst
        window, not a permanent stat bump, so it rewards timing it against a
        fat pack instead of just being free extra DPS on every tick. */
-    ability: { name: 'Nişan Al', desc: 'Ateş hızını 5 sn boyunca ikiye katlar.', cd: 20, targeted: false, mult: 0.5, dur: 5 }
+    ability: { name: 'Nişan Al', desc: 'Ateş hızını 5 sn boyunca ikiye katlar.', cd: 20, targeted: false, mult: 0.5, dur: 5 },
+    /* Phase 2, item 2: lv[2] branching specialization (Kingdom Rush model --
+       two divergent 4th-tier paths off the same top level, permanent once
+       chosen). Arrow's identity is "fast, single-target, anti-light-armor" --
+       the two branches split that in opposite directions: KEEP single-target
+       but push it toward a slow armor-piercing snipe (long range, huge hit),
+       vs TRADE single-target away for a splash-adding volley (short range,
+       fast, many small hits). `price` is the gold cost of the branch choice
+       itself, paid like an upgrade (see branchTower). Only fields present
+       here override the kind-level def in towerDef()/fire()/pickTarget() --
+       fields absent (e.g. no `splash` on the sniper) fall back to the kind's
+       base (no splash), so branches only need to state what's DIFFERENT. */
+    branch: [
+      { name: 'Kartal Gözü', price: 240,
+        lore: 'Tek atımlık, delici bir vuruş. Menzil ve hasar tavan yapar, ateş hızı düşer.',
+        dmg: 130, rate: 0.95, range: 240 },
+      { name: 'Yaylım Ateşi', price: 240,
+        lore: 'Tek hedefi bırakır, etrafa yayılan bir ok sağanağına döner.',
+        dmg: 34, rate: 0.30, range: 150, splash: 36 }
+    ]
   },
   cannon: {
     name: 'Top Kulesi', key: '2', cost: 115, dmgType: 'siege', air: false, proj: 'shell', splash: 48,
@@ -1713,7 +1745,21 @@ const TOWERS = {
        flow (see triggerSpell/bindInput). An instant, off-cycle heavy shell at
        the aimed point: a burst effect on its own cooldown, independent of the
        tower's normal fire timer, not just "more damage per normal shot". */
-    ability: { name: 'Gülle Yağmuru', desc: 'Hedef noktaya ağır gülle indirir, geniş alan hasarı verir.', cd: 25, targeted: true, range: 260, radius: 95, dmgMult: 3 }
+    ability: { name: 'Gülle Yağmuru', desc: 'Hedef noktaya ağır gülle indirir, geniş alan hasarı verir.', cd: 25, targeted: true, range: 260, radius: 95, dmgMult: 3 },
+    /* Cannon's identity is "ground-only siege breaker". One branch doubles
+       down on that (bigger, slower, wider splash -- pure demolition); the
+       other trades raw power for a mechanical first for this kind: `air:
+       true` flips the ground-only restriction, so Şarapnel Bataryası is the
+       one cannon that can finally answer a flyer, at the cost of a much
+       smaller shell. */
+    branch: [
+      { name: 'Kuşatma Ustası', price: 320,
+        lore: 'Devasa güllelerle sur döker. Daha yavaş ama alanı ve gücü katlanır.',
+        dmg: 300, rate: 1.75, range: 200, splash: 80 },
+      { name: 'Şarapnel Bataryası', price: 320,
+        lore: 'Küçük, hızlı şarapnel mermileri -- artık gökyüzünü de vurabilir.',
+        dmg: 95, rate: 0.85, range: 170, splash: 34, air: true }
+    ]
   },
   frost: {
     name: 'Buz Kulesi', key: '3', cost: 105, dmgType: 'magic', air: true, proj: 'shard',
@@ -1723,7 +1769,20 @@ const TOWERS = {
       { dmg: 15, rate: 1.05, range: 140, sell: 74 },
       { dmg: 32, rate: 0.92, range: 156, cost: 140, sell: 170 },
       { dmg: 63, rate: 0.80, range: 176, cost: 290, sell: 365 }
-    ], names: ['Buz Kulesi', 'Ayaz Sunağı', 'Kış Hanı']
+    ], names: ['Buz Kulesi', 'Ayaz Sunağı', 'Kış Hanı'],
+    /* Frost's identity is "control via slow", not raw damage. One branch
+       pushes that to its logical extreme -- a near-root single-target lock
+       with weak damage; the other spends the control budget on AREA instead,
+       adding splash (a mechanic frost never had) at the cost of a much
+       shorter, weaker slow. Genuinely opposite reads on the same tower. */
+    branch: [
+      { name: 'Ebedi Ayaz', price: 260,
+        lore: 'Tek hedefi neredeyse durdurur. Hasarı düşüktür, tuttuğu an kilitler.',
+        dmg: 40, rate: 1.05, range: 190, slow: 0.72, slowDur: 3.2 },
+      { name: 'Buz Fırtınası', price: 260,
+        lore: 'Donu bir alana yayar. Tutuşu zayıflar ama tek vuruşta kalabalık donar.',
+        dmg: 55, rate: 0.68, range: 165, splash: 40, slow: 0.30, slowDur: 1.0 }
+    ]
   },
   poison: {
     name: 'Zehir Kulesi', key: '4', cost: 140, dmgType: 'normal', air: true, proj: 'blob', splash: 34,
@@ -1733,7 +1792,23 @@ const TOWERS = {
       { dmg: 18, rate: 1.20, range: 136, sell: 98 },
       { dmg: 36, rate: 1.08, range: 150, cost: 175, sell: 220 },
       { dmg: 70, rate: 0.95, range: 168, cost: 355, sell: 460 }
-    ], names: ['Zehir Kulesi', 'Bataklık Sunağı', 'Kara Şaman']
+    ], names: ['Zehir Kulesi', 'Bataklık Sunağı', 'Kara Şaman'],
+    /* Poison's identity is "lingering area damage". Veba Sunağı is that
+       identity turned up to a plague -- bigger splash, much stronger/longer
+       dot, a swarm-clearing zone. Fısıltı Zehiri is the opposite bet: it
+       gives up the splash entirely (splash: 0) for a single-target assassin
+       venom, and switches dmgType to 'chaos' (flat 1.0x on every armor
+       tier, see MATRIX) so its burst reads as "poison ignores armor"
+       instead of just being a bigger number -- a mechanical identity no
+       other branch in the game uses. */
+    branch: [
+      { name: 'Veba Sunağı', price: 300,
+        lore: 'Zehri bir vebaya dönüştürür. Geniş alan, uzun ve ağır bir çürüme.',
+        dmg: 55, rate: 1.15, range: 180, splash: 60, dot: 22, dotDur: 6.5 },
+      { name: 'Fısıltı Zehiri', price: 300,
+        lore: 'Tek hedefe işleyen sessiz bir zehir -- zırhı hiç tanımaz.',
+        dmg: 130, rate: 0.75, range: 155, splash: 0, dmgType: 'chaos', dot: 9, dotDur: 4.0 }
+    ]
   },
   storm: {
     name: 'Yıldırım Kulesi', key: '5', cost: 215, dmgType: 'magic', air: true, proj: 'chain', chain: 4,
@@ -1747,10 +1822,42 @@ const TOWERS = {
        outward: a support burst that speeds up every tower (any owner) caught
        in the ring, not just itself -- a debuff/buff-application ability
        rather than "more damage", and deliberately co-op-flavoured. */
-    ability: { name: 'Gök Çemberi', desc: 'Çevredeki tüm kulelerin ateş hızını 6 sn artırır.', cd: 30, targeted: false, radius: 220, mult: 0.55, dur: 6 }
+    ability: { name: 'Gök Çemberi', desc: 'Çevredeki tüm kulelerin ateş hızını 6 sn artırır.', cd: 30, targeted: false, radius: 220, mult: 0.55, dur: 6 },
+    /* Storm's identity is "chain lightning, weaker per bounce". Fırtına Gözü
+       collapses the chain to a single bolt (chain: 1) and pours everything
+       saved into one huge hit + huge range -- a focus-fire lightning spear.
+       Kasırga Zinciri does the opposite: chain balloons to 8 jumps, rate
+       goes up, per-hit damage drops -- a pure crowd-clearing web. */
+    branch: [
+      { name: 'Fırtına Gözü', price: 420,
+        lore: 'Zinciri tek, devasa bir yıldırım mızrağına dönüştürür.',
+        dmg: 260, rate: 2.1, range: 260, chain: 1 },
+      { name: 'Kasırga Zinciri', price: 420,
+        lore: 'Yıldırım artık sekiz düşmana kadar sıçrar -- kalabalığın belasıdır.',
+        dmg: 95, rate: 1.15, range: 190, chain: 8 }
+    ]
   }
 };
 const TOWER_KEYS = ['arrow', 'cannon', 'frost', 'poison', 'storm'];
+/* per-kind, per-branch accent-colour pairs used only for the branch sprite's
+   trim/band recolour (BRANCH_TRIM, fed into drawTowerBase) and a matching
+   translucent lightPass wash over the whole sprite (BRANCH_TINT, fed into
+   bakeTower) so a branched tower reads as a distinct variant at a glance,
+   without needing separate hand-drawn geometry per branch. */
+const BRANCH_TRIM = {
+  arrow: [[200, 230, 255], [255, 150, 80]],
+  cannon: [[220, 110, 90], [255, 210, 110]],
+  frost: [[150, 200, 255], [235, 250, 255]],
+  poison: [[170, 230, 90], [220, 140, 240]],
+  storm: [[255, 220, 140], [210, 160, 255]]
+};
+const BRANCH_TINT = {
+  arrow: ['rgba(190,225,255,0.22)', 'rgba(255,150,70,0.22)'],
+  cannon: ['rgba(210,90,70,0.22)', 'rgba(255,210,110,0.22)'],
+  frost: ['rgba(130,180,255,0.24)', 'rgba(230,250,255,0.24)'],
+  poison: ['rgba(150,210,70,0.22)', 'rgba(200,110,220,0.24)'],
+  storm: ['rgba(255,215,130,0.22)', 'rgba(200,150,255,0.24)']
+};
 
 /* ---------- creep archetypes ---------- */
 const CREEPS = {
@@ -2056,7 +2163,34 @@ function spawnSplitChild(parent, intoKey, hp, bounty) {
   G.creeps.push(c);
   return c;
 }
-function towerStat(t) { return TOWERS[t.kind].lv[t.lvl]; }
+/* Once a tower is branched (t.branch set, permanent -- see branchTower), its
+   numeric stats come from TOWERS[kind].branch[b] instead of lv[lvl]. lvl
+   itself never changes past 2 when branching (branching is not a 4th
+   upgrade step, it's a fork), so every OTHER caller that keys off t.lvl
+   (buildT animation scale, upgradeCost, the 'MAKS' label, abilityOf) keeps
+   working unmodified after a branch is chosen. */
+function towerStat(t) { return t.branch != null ? TOWERS[t.kind].branch[t.branch] : TOWERS[t.kind].lv[t.lvl]; }
+/* Merged, tower-INSTANCE-aware version of TOWERS[t.kind] for the handful of
+   mechanical (non-numeric-stat) fields a branch can override: dmgType, air,
+   splash, chain, slow/slowDur, dot/dotDur. Only fields the branch actually
+   defines are overridden -- everything else (proj, name, lore, cost, ability,
+   lv, names, branch) still comes from the kind-level def, so an unbranched
+   tower (t.branch == null) is EXACTLY TOWERS[t.kind], same object, same
+   identity, zero behavioural change from before this feature existed. */
+function towerDef(t) {
+  const kd = TOWERS[t.kind];
+  if (t.branch == null) return kd;
+  const bd = kd.branch[t.branch];
+  if (bd._def) return bd._def;
+  const merged = Object.assign({}, kd);
+  for (const f of ['dmgType', 'air', 'splash', 'chain', 'slow', 'slowDur', 'dot', 'dotDur']) {
+    if (bd[f] !== undefined) merged[f] = bd[f];
+  }
+  return (bd._def = merged);
+}
+/* Display name for HUD/info-panel titles: the branch's own name once chosen,
+   otherwise the ordinary per-level name (def.names[t.lvl]) exactly as before. */
+function towerTitle(t) { return t.branch != null ? TOWERS[t.kind].branch[t.branch].name : TOWERS[t.kind].names[t.lvl]; }
 function placeTower(kind, gx, gy, owner) {
   const def = TOWERS[kind];
   if (G.gold[owner] < def.cost) return { ok: false, why: 'Altın yetersiz' };
@@ -2072,7 +2206,11 @@ function placeTower(kind, gx, gy, owner) {
     // faster" effect any tower can carry, regardless of whether ITS OWN kind
     // has an ability -- the storm tower's Gök Çemberi applies these to
     // towers of other kinds too, not just to itself.
-    acd: 0, buffT: 0, buffMult: 1
+    acd: 0, buffT: 0, buffMult: 1,
+    // Phase 2 item 2: branch is null until the tower reaches lvl 2 and its
+    // owner spends gold to pick one of TOWERS[kind].branch[0|1] (see
+    // branchTower) -- permanent afterward, never reset by anything else.
+    branch: null
   };
   G.towers.push(t); G.towerAt[i] = t.id;
   computeFlow();
@@ -2096,6 +2234,22 @@ function sellTower(t, owner) {
   G.towers.splice(G.towers.indexOf(t), 1);
   computeFlow();
   return { ok: true, refund };
+}
+/* Phase 2, item 2: branching. Follows upgradeTower's exact shape (owner
+   check, affordability check, deduct gold, mutate) but instead of bumping
+   t.lvl it locks in t.branch -- once set it is never cleared, matching
+   Kingdom Rush's permanent-specialization model. The branch price is added
+   to t.invest exactly like an upgrade cost is, so sellTower's refund
+   (t.invest * 0.72) automatically reflects the branch investment too. */
+function branchTower(t, owner, b) {
+  if (t.owner !== owner) return { ok: false, why: 'Bu kule senin değil' };
+  if (t.lvl < 2) return { ok: false, why: 'Önce en üst seviyeye çık' };
+  if (t.branch != null) return { ok: false, why: 'Dal zaten seçildi' };
+  const bd = TOWERS[t.kind].branch[b];
+  if (!bd) return { ok: false, why: 'Geçersiz dal' };
+  if (G.gold[owner] < bd.price) return { ok: false, why: 'Altın yetersiz' };
+  G.gold[owner] -= bd.price; t.invest += bd.price; t.branch = b;
+  return { ok: true };
 }
 
 /* ============================================================
@@ -2324,7 +2478,7 @@ function damage(c, amount, dmgType, ownerIdx, tower) {
 
 function pickTarget(t) {
   const st = towerStat(t), r2 = st.range * st.range;
-  const def = TOWERS[t.kind];
+  const def = towerDef(t);
   let best = null, bestScore = -Infinity;
   for (const c of G.creeps) {
     if (c.dead) continue;
@@ -2347,7 +2501,7 @@ function updateTowers(dt) {
     if (t.recoil > 0) t.recoil -= dt * 4;
     if (t.acd > 0) t.acd -= dt;
     if (t.buffT > 0) { t.buffT -= dt; if (t.buffT <= 0) { t.buffT = 0; t.buffMult = 1; } }
-    const st = towerStat(t), def = TOWERS[t.kind];
+    const st = towerStat(t), def = towerDef(t);
     if (t.cd > 0) t.cd -= dt;
     let tgt = t.target ? G.creeps.find(c => c.id === t.target && !c.dead) : null;
     if (tgt) { const r2 = st.range * st.range; if (dist2(t.x, t.y, tgt.x, tgt.y) > r2) tgt = null; }
@@ -2365,7 +2519,7 @@ function updateTowers(dt) {
   }
 }
 function fire(t, tgt, px, py) {
-  const def = TOWERS[t.kind], st = towerStat(t);
+  const def = towerDef(t), st = towerStat(t);
   if (def.proj === 'chain') {
     // instant chain lightning
     const hits = []; let cur = tgt, dmg = st.dmg;
@@ -2426,7 +2580,10 @@ function impact(p, x, y, tgt) {
     const r2 = p.splash * p.splash;
     for (const c of G.creeps) {
       if (c.dead) continue;
-      if (c.air && kind === 'shell') continue;
+      // ordinarily shells never hit air (def.air === false); Şarapnel
+      // Bataryası (cannon branch 1) overrides air:true, so this now asks the
+      // FIRING TOWER's merged def instead of hardcoding the kind's base.
+      if (kind === 'shell' && c.air && !(p.tower && towerDef(p.tower).air)) continue;
       const d2 = dist2(x, y, c.x, c.y - c.z);
       if (d2 <= r2) {
         const f = 1 - Math.sqrt(d2) / p.splash * 0.55;
@@ -2439,7 +2596,11 @@ function impact(p, x, y, tgt) {
   } else if (tgt) {
     damage(tgt, p.dmg, p.dmgType, p.owner, p.tower);
     if (kind === 'shard') {
-      const st = TOWERS.frost;
+      // branch-aware: towerDef(p.tower) falls back to TOWERS.frost's own
+      // slow/slowDur when the firing tower is unbranched, and picks up the
+      // branch's override (Ebedi Ayaz's near-root vs Buz Fırtınası's
+      // shorter/weaker slow) once it is.
+      const st = p.tower ? towerDef(p.tower) : TOWERS.frost;
       tgt.slow = Math.max(tgt.slow, st.slow); tgt.slowT = st.slowDur;
       ev('frostHit', { x, y });
     } else ev('hit', { x, y, a: p.ang });
@@ -2449,9 +2610,20 @@ function impact(p, x, y, tgt) {
   }
 }
 function applyPoison(c, p) {
-  const st = TOWERS.poison;
-  c.dot = Math.max(c.dot, st.dot * (1 + (p.tower ? p.tower.lvl : 0)));
-  c.dotT = st.dotDur; c.dotSrc = p.owner;
+  const t = p.tower;
+  // unbranched: exactly the old formula (base dot scaled by lvl). Branched:
+  // the branch's dot/dotDur (Veba Sunağı's heavy plague vs Fısıltı Zehiri's
+  // leaner tick) is already the FINAL intended value, so it is used as-is
+  // instead of being re-multiplied by lvl (lvl stays 2 forever post-branch).
+  if (t && t.branch != null) {
+    const bd = towerDef(t);
+    c.dot = Math.max(c.dot, bd.dot); c.dotT = bd.dotDur;
+  } else {
+    const st = TOWERS.poison;
+    c.dot = Math.max(c.dot, st.dot * (1 + (t ? t.lvl : 0)));
+    c.dotT = st.dotDur;
+  }
+  c.dotSrc = p.owner;
 }
 
 /* ---------- spells ---------- */
@@ -2507,7 +2679,7 @@ function useAbility(t, owner, x, y) {
       const d2 = dist2(x, y, c.x, c.y - c.z);
       if (d2 <= r2) {
         const f = 1 - Math.sqrt(d2) / ab.radius * 0.5;
-        damage(c, st.dmg * ab.dmgMult * f, TOWERS.cannon.dmgType, owner, t);
+        damage(c, st.dmg * ab.dmgMult * f, towerDef(t).dmgType, owner, t);
       }
     }
     ev('explosion', { x, y, r: ab.radius, owner });
@@ -3178,7 +3350,7 @@ function drawDecor(x, d) {
   }
 }
 function drawTower(x, t) {
-  const spr = R.sprites.towers[t.kind + t.lvl]; if (!spr) return;
+  const spr = R.sprites.towers[t.branch != null ? t.kind + 'b' + t.branch : t.kind + t.lvl]; if (!spr) return;
   const bx = t.x - spr.S / 2, by = t.y - spr.S * 0.66;
   const build = t.buildT > 0 ? t.buildT / (TICK_HZ * 0.5) : 0;
   x.save();
@@ -3736,10 +3908,43 @@ function drawInfoPanelPortrait(x, px, py, w, h) {
     return;
   }
   const def = TOWERS[t.kind], st = towerStat(t), nxt = def.lv[t.lvl + 1];
-  txt(x, fitText(x, def.names[t.lvl], maxW, 12.5, null, 800), px + 10, py + 12, 12.5, '#ffe0a0', 'left', 800);
-  txt(x, fitText(x, `${st.dmg} hasar · ${(1 / st.rate).toFixed(1)}/sn · ${st.range} menzil · ${t.kills} kelle`, maxW, 9.5, 'system-ui', 600),
-    px + 10, py + 26, 9.5, '#c9bfa6', 'left', 600, 'system-ui');
+  // Once a tower hits lv2 and hasn't branched yet, it stays at lv2's OWN
+  // stats (towerStat/upgradeTower are untouched -- nxt is already undefined
+  // at lvl 2, same "MAKS" case as before this feature existed) until the
+  // owner spends gold on one of TOWERS[kind].branch[0|1] via branchTower.
+  const branching = t.lvl === 2 && t.branch == null;
+  txt(x, fitText(x, towerTitle(t), maxW, 12.5, null, 800), px + 10, py + 12, 12.5, '#ffe0a0', 'left', 800);
+  if (branching) {
+    txt(x, fitText(x, 'Uzmanlaşma seç — kalıcı bir seçim', maxW, 9.5, 'system-ui', 600),
+      px + 10, py + 26, 9.5, '#c9bfa6', 'left', 600, 'system-ui');
+  } else {
+    txt(x, fitText(x, `${st.dmg} hasar · ${(1 / st.rate).toFixed(1)}/sn · ${st.range} menzil · ${t.kills} kelle`, maxW, 9.5, 'system-ui', 600),
+      px + 10, py + 26, 9.5, '#c9bfa6', 'left', 600, 'system-ui');
+  }
   const modeNames = ['ilk', 'güçlü', 'zayıf', 'yakın'];
+  if (branching) {
+    // Branch-choice row replaces the normal up/sell/mode row: two branch
+    // cards (name + a compact dmg/rate/range hint + price) plus SELL, using
+    // the SAME generalized N-button geometry as the ability row below (n=3
+    // here since there is no upgrade/mode/ability to show mid-choice), so
+    // every rect is still >= TOUCH_MIN (44px) in portrait.
+    const n = 3;
+    const bw = (w - 20 - 6 * (n - 1)) / n, byy = py + h - TOUCH_MIN - 2;
+    const rectAt = i => px + 10 + i * (bw + 6);
+    for (let b = 0; b < 2; b++) {
+      const bd = def.branch[b];
+      const r = addRect('br' + b, rectAt(b), byy, bw, TOUCH_MIN, () => cmdBranch(t, b));
+      const afford = t.owner === NET.me && G.gold[NET.me] >= bd.price;
+      panel(x, r.x, r.y, r.w, r.h, { r: 5, gold: afford });
+      txt(x, fitText(x, bd.name, bw - 6, 8.5, null, 800), r.x + r.w / 2, r.y + 11, 8.5, afford ? '#ffd76a' : '#8a8578', 'center', 800);
+      txt(x, fitText(x, `${bd.dmg}d·${(1 / bd.rate).toFixed(1)}/s·${bd.range}m`, bw - 6, 7.6, 'system-ui', 600), r.x + r.w / 2, r.y + 23, 7.6, '#c9bfa6', 'center', 600, 'system-ui');
+      txt(x, bd.price + ' altın', r.x + r.w / 2, r.y + r.h - 7, 7.6, afford ? '#ffe08a' : '#8a8578', 'center', 700, 'system-ui');
+    }
+    const sR = addRect('sell', rectAt(2), byy, bw, TOUCH_MIN, () => cmdSell());
+    panel(x, sR.x, sR.y, sR.w, sR.h, { r: 5 });
+    txt(x, `SAT ${Math.round(t.invest * 0.72)}`, sR.x + sR.w / 2, sR.y + sR.h / 2, 9.5, '#e0c9a0', 'center', 800);
+    return;
+  }
   // 4th button (ability) only when this tower is top-level AND its kind has
   // one -- see TOWERS[k].ability / abilityOf(). Width formula generalizes
   // the original 3-button math (bw = (w-20-12)/3) to N buttons at a fixed
@@ -3791,10 +3996,36 @@ function drawInfoPanel(x, px, py, w, h, S) {
     return;
   }
   const def = TOWERS[t.kind], st = towerStat(t), nxt = def.lv[t.lvl + 1];
-  txt(x, def.names[t.lvl], px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
-  txt(x, `${st.dmg} hasar · ${(1 / st.rate).toFixed(1)}/sn · ${st.range} menzil`, px + 10, py + 32 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
-  txt(x, `DPS ${(st.dmg / st.rate).toFixed(0)} · ${DMGT[def.dmgType]} · ${t.kills} kelle`, px + 10, py + 47 * S, 9.5 * S, '#9a917f', 'left', 600, 'system-ui');
+  const branching = t.lvl === 2 && t.branch == null;
+  txt(x, towerTitle(t), px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
+  if (branching) {
+    txt(x, 'Uzmanlaşma seç — kalıcı bir seçim', px + 10, py + 32 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
+    const b0 = def.branch[0], b1 = def.branch[1];
+    txt(x, fitText(x, `${b0.name}: ${b0.dmg}d/${(1 / b0.rate).toFixed(1)}s/${b0.range}m · ${b1.name}: ${b1.dmg}d/${(1 / b1.rate).toFixed(1)}s/${b1.range}m`, w - 20, 8.5 * S, 'system-ui', 600),
+      px + 10, py + 47 * S, 8.5 * S, '#9a917f', 'left', 600, 'system-ui');
+  } else {
+    txt(x, `${st.dmg} hasar · ${(1 / st.rate).toFixed(1)}/sn · ${st.range} menzil`, px + 10, py + 32 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
+    txt(x, `DPS ${(st.dmg / st.rate).toFixed(0)} · ${DMGT[def.dmgType]} · ${t.kills} kelle`, px + 10, py + 47 * S, 9.5 * S, '#9a917f', 'left', 600, 'system-ui');
+  }
   const modeNames = ['ilk', 'güçlü', 'zayıf', 'yakın'];
+  if (branching) {
+    // same treatment as drawInfoPanelPortrait: replace up/sell/mode with the
+    // two branch cards + sell, reusing desktop's own N-button constants.
+    const n = 3;
+    const bw = (w - 16 - 4 * (n - 1)) / n, byy = py + h - 30 * S;
+    const rectAt = i => px + 8 + i * (bw + 4 * S);
+    for (let b = 0; b < 2; b++) {
+      const bd = def.branch[b];
+      const r = addRect('br' + b, rectAt(b), byy, bw, 24 * S, () => cmdBranch(t, b));
+      const afford = t.owner === NET.me && G.gold[NET.me] >= bd.price;
+      panel(x, r.x, r.y, r.w, r.h, { r: 5, gold: afford });
+      txt(x, fitText(x, `${bd.name} · ${bd.price}`, bw - 6, 8 * S, null, 800), r.x + r.w / 2, r.y + r.h / 2, 8 * S, afford ? '#ffd76a' : '#8a8578', 'center', 800);
+    }
+    const sR = addRect('sell', rectAt(2), byy, bw, 24 * S, () => cmdSell());
+    panel(x, sR.x, sR.y, sR.w, sR.h, { r: 5 });
+    txt(x, `SAT ${Math.round(t.invest * 0.72)}`, sR.x + sR.w / 2, sR.y + sR.h / 2, 9 * S, '#e0c9a0', 'center', 800);
+    return;
+  }
   // 4th button (ability) mirrors drawInfoPanelPortrait's layout math -- same
   // generalized N-button formula, desktop's original constants (gap 4, outer
   // margin 8) in place of portrait's (gap 6, margin 10).
@@ -3932,6 +4163,10 @@ function applyCmd(c, who) {
     if (res.ok) { ev('sell', { x: t.x, y: t.y }); ev('sfx', { name: 'sell' }); NET.gridDirty = true; if (UI.sel === t) UI.sel = null; }
   } else if (c.k === 'mode') {
     const t = G.towers.find(t => t.id === c.id); if (t && t.owner === who) t.mode = (t.mode + 1) % 4;
+  } else if (c.k === 'branch') {
+    const t = G.towers.find(t => t.id === c.id); if (!t) return;
+    const res = branchTower(t, who, c.b);
+    if (res.ok) ev('sfx', { name: 'build' }); else if (who === NET.me) { UI.toast(res.why, '#ff9a8a'); Audio2.play('deny'); }
   } else if (c.k === 'ability') {
     const t = G.towers.find(t => t.id === c.id); if (!t) return;
     const res = useAbility(t, who, c.x, c.y);
@@ -3962,6 +4197,7 @@ function cmdStartWave() { issue({ k: 'start' }); }
 function cmdUpgrade() { if (UI.sel) issue({ k: 'upgrade', id: UI.sel.id }); }
 function cmdSell() { if (UI.sel) { issue({ k: 'sell', id: UI.sel.id }); UI.sel = null; } }
 function cmdMode() { if (UI.sel) issue({ k: 'mode', id: UI.sel.id }); }
+function cmdBranch(t, b) { if (t) issue({ k: 'branch', id: t.id, b }); }
 /* Tower-owned ability trigger. Mirrors triggerSpell's aim-toggle shape --
    a targeted ability arms UI.spellAim (reusing the exact same click-to-aim
    pointerup/render path as the Q spell, see bindInput and the R.render
@@ -4144,7 +4380,10 @@ function snapshot() {
   // slot 12 (t.acd, the tower-owned ability's own cooldown in seconds) is
   // APPENDED here -- constraint: appending is safe, existing slots 0-11 keep
   // their positions so applySnapshot's positional unpack below stays valid.
-  for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest, Math.round(t.acd * 20) / 20]);
+  // slot 13 (t.branch, Phase 2 item 2) is appended AFTER slot 12 for the same
+  // reason -- -1 means unbranched (no branch chosen yet), 0/1 select
+  // TOWERS[kind].branch[0|1]. Never insert earlier; only ever append.
+  for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest, Math.round(t.acd * 20) / 20, t.branch == null ? -1 : t.branch]);
   const pr = [];
   for (const p of G.projs) pr.push([['arrow', 'shell', 'shard', 'blob'].indexOf(p.kind), Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.ang * 100) / 100]);
   const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ev: EVQ.slice() };
@@ -4176,6 +4415,7 @@ function applySnapshot(s) {
     t.kind = KIDX[a[1]]; t.lvl = a[2]; t.gx = a[3]; t.gy = a[4]; t.angle = a[5]; t.owner = a[6];
     t.recoil = a[7]; t.mode = a[8]; t.kills = a[9]; t.buildT = a[10]; t.invest = a[11];
     t.acd = a[12] || 0; // new slot (appended, see snapshot()) -- ability cooldown
+    t.branch = (a[13] === undefined || a[13] === -1) ? null : a[13]; // appended slot 13 -- branch choice
     t.x = t.gx * TILE + TILE / 2; t.y = t.gy * TILE + TILE / 2; t.dmg = t.dmg || 0;
     return t;
   });
@@ -4321,6 +4561,11 @@ function bootstrap() {
   const jobs = [];
   for (const k in CREEPS) jobs.push({ label: CREEPS[k].name, fn: () => { R.sprites.units[k] = bakeUnit(CREEPS[k]); } });
   for (const k in TOWERS) for (let l = 0; l < 3; l++) jobs.push({ label: TOWERS[k].names[l], fn: () => { R.sprites.towers[k + l] = bakeTower(k, l); } });
+  // branch sprites (Phase 2, item 2): reuse lv2 geometry (see bakeTower), so
+  // this is 10 more bakes of the SAME per-tower cost as the lv2 job above,
+  // not 10 new hand-drawn shapes -- keyed 'kind'+'b'+branch, distinct from
+  // the plain kind+lvl keys so drawTower()/build preview lookups never clash.
+  for (const k in TOWERS) for (let b = 0; b < 2; b++) jobs.push({ label: TOWERS[k].branch[b].name, fn: () => { R.sprites.towers[k + 'b' + b] = bakeTower(k, 2, b); } });
   // decor variants are tiny (~10ms for all twelve) — bake them in two jobs rather
   // than twelve so the loader does not spend a frame apiece on them
   jobs.push({ label: 'Altay ormanı', fn: () => { for (let v = 0; v < TREES.length; v++) R.sprites.trees[v] = bakeTree(v); } });
