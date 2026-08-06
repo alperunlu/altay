@@ -90,6 +90,12 @@
     <h1>ALTAY</h1>
     <div class="kicker">Gök Kapısını Tut</div>
     <p class="lead">Erlik'in orduları bozkırdan yürüyor. Kulelerinle labirent ör, otuz dalgayı geri püskürt, kapıyı düşürme.</p>
+    <div class="kicker" style="margin-bottom:6px">Zorluk</div>
+    <div class="row" id="diffRow" style="margin-bottom:8px">
+      <button id="diffEasy" data-diff="easy">Kolay</button>
+      <button id="diffNormal" data-diff="normal" class="primary">Normal</button>
+      <button id="diffHard" data-diff="hard">Zor</button>
+    </div>
     <button class="primary" id="btnSolo">Tek başına oyna</button>
     <button id="btnHost">Oda kur ve arkadaş çağır</button>
     <button id="btnJoinShow">Odaya katıl</button>
@@ -3776,9 +3782,8 @@ function issue(cmd) {
    below carries the regenerated grid across on the next send. */
 function resetRun(seed) {
   G.mapSeed = seed !== undefined ? seed : (G.mapSeed !== undefined ? G.mapSeed : 20260803);
-  WAVES = buildWaves(G.difficulty);
+  applyDifficulty(); // rebuilds WAVES and resets G.lives for the current tier
   G.tick = 0; G.phase = 'prep';
-  G.lives = (DIFFICULTY[G.difficulty] || DIFFICULTY.normal).lives;
   G.waveIdx = 0; G.spawnGroupIdx = 0; G.spawnLeft = 0; G.spawnTimer = 0;
   G.prepTimer = 30 * TICK_HZ;
   G.gold = [SOLO_START_GOLD, SOLO_START_GOLD];
@@ -4063,10 +4068,24 @@ function netErr(t) {
 /* Called the moment a co-op session is chosen, before any tower is bought, so
    nobody ever has gold taken away from under them mid-game. */
 function setCoopEconomy() { G.gold[0] = G.gold[1] = COOP_START_GOLD; }
+/* Applies the lobby's picked difficulty. Only the host's simulation ever
+   drives gameplay (only the host runs simTick), so this is called on every
+   entry path for simplicity, but a guest's own call here is purely
+   decorative: creep hp/bounty reach the guest through the ordinary per-creep
+   snapshot fields (already scaled by whichever tier the HOST applied), never
+   by the guest reading its own local WAVES. WAVES.length (used in win-screen
+   text) is also difficulty-invariant -- difficulty scales hp/bounty/lives,
+   never wave count. So no difficulty handshake between host and guest is
+   needed for correctness. A guest-visible "the host picked Zor" badge would
+   need one and is left for later. */
+function applyDifficulty() {
+  WAVES = buildWaves(G.difficulty);
+  G.lives = (DIFFICULTY[G.difficulty] || DIFFICULTY.normal).lives;
+}
 function netHost(code, attempt) {
   attempt = attempt || 0;
   NET.active = true; NET.isHost = true; NET.me = 0; NET.room = code; NET.status = 'oda ' + code + ' · bekleniyor';
-  setCoopEconomy();
+  setCoopEconomy(); applyDifficulty();
   let opened = false;
   let p;
   try { p = new window.Peer('otuken-' + code, { debug: 0, config: ICE }); }
@@ -4100,7 +4119,7 @@ function netHost(code, attempt) {
 }
 function netJoin(code) {
   NET.active = true; NET.isHost = false; NET.me = 1; NET.room = code; NET.status = 'bağlanıyor';
-  setCoopEconomy();
+  setCoopEconomy(); applyDifficulty();
   const p = new window.Peer(undefined, { debug: 0, config: ICE });
   NET.peer = p;
   p.on('open', () => {
@@ -4250,7 +4269,13 @@ function secureOk() {
 const NOPEER = 'Çevrimiçi kütüphaneye ulaşılamadı.<br><span style="opacity:.7">İnternet bağlantısını, reklam engelleyiciyi veya VPN\'i kontrol et. Tek başına oynamak her zaman çalışır.</span>';
 
 function wireShell() {
-  $('btnSolo').onclick = () => { NET.active = false; NET.me = 0; closeLobby(); Audio2.init(); };
+  ['diffEasy', 'diffNormal', 'diffHard'].forEach(id => {
+    $(id).onclick = () => {
+      G.difficulty = $(id).dataset.diff;
+      ['diffEasy', 'diffNormal', 'diffHard'].forEach(x => $(x).classList.toggle('primary', x === id));
+    };
+  });
+  $('btnSolo').onclick = () => { NET.active = false; NET.me = 0; applyDifficulty(); closeLobby(); Audio2.init(); };
   $('btnHost').onclick = async () => {
     Audio2.init();
     $('joinRow').classList.add('hidden');
