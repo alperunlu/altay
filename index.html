@@ -3999,10 +3999,13 @@ function drawInfoPanel(x, px, py, w, h, S) {
   const branching = t.lvl === 2 && t.branch == null;
   txt(x, towerTitle(t), px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
   if (branching) {
+    // Deliberately no combined "branch0: stats · branch1: stats" summary
+    // line here: cramming both branches' dmg/rate/range into one fitText'd
+    // line truncated to an unreadable "..." for whichever branch didn't fit
+    // (found by screenshotting this exact panel). Each branch's own compact
+    // stat line lives on its own card below instead -- same pattern portrait
+    // already used correctly.
     txt(x, 'Uzmanlaşma seç — kalıcı bir seçim', px + 10, py + 32 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
-    const b0 = def.branch[0], b1 = def.branch[1];
-    txt(x, fitText(x, `${b0.name}: ${b0.dmg}d/${(1 / b0.rate).toFixed(1)}s/${b0.range}m · ${b1.name}: ${b1.dmg}d/${(1 / b1.rate).toFixed(1)}s/${b1.range}m`, w - 20, 8.5 * S, 'system-ui', 600),
-      px + 10, py + 47 * S, 8.5 * S, '#9a917f', 'left', 600, 'system-ui');
   } else {
     txt(x, `${st.dmg} hasar · ${(1 / st.rate).toFixed(1)}/sn · ${st.range} menzil`, px + 10, py + 32 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
     txt(x, `DPS ${(st.dmg / st.rate).toFixed(0)} · ${DMGT[def.dmgType]} · ${t.kills} kelle`, px + 10, py + 47 * S, 9.5 * S, '#9a917f', 'left', 600, 'system-ui');
