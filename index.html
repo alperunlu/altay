@@ -1781,6 +1781,41 @@ const CREEPS = {
     name: 'Ötüken Devi', armor: 4, air: false, speed: 30, px: 144, s: 84, leg: 0.28, head: 0.155, big: true, boss: true,
     kind: 'humanoid', weapon: 'club', shoulder: true, armorPlate: true, horns: true, eye: '#8affd0',
     pal: { body: [78, 96, 92], limb: [64, 80, 78], armor: [122, 132, 128], accent: [140, 255, 208], horn: [210, 226, 220] }
+  },
+  /* ---- Phase 1: ability creeps. Appended at the END of CREEPS on purpose --
+     CIDX = Object.keys(CREEPS) is the wire index for the creep-type slot in
+     snapshot(), so inserting these earlier would renumber every existing
+     type sent over the network. Each carries an `abil` block; its absence on
+     every creep above is what keeps them all exactly as before. ---- */
+  basci: {
+    // ranged suppressor: a steppe shaman who curses a nearby tower silent
+    // rather than dealing HP damage (towers have no HP -- see updateTowers).
+    name: 'Kara Bakşı', armor: 1, air: false, speed: 38, px: 78, s: 40, leg: 0.28, head: 0.16,
+    kind: 'humanoid', weapon: 'spear', cape: true, horns: false, ears: false, eye: '#c79bff',
+    pal: { body: [70, 46, 90], limb: [56, 38, 74], armor: [96, 70, 120], accent: [200, 150, 255], horn: [220, 200, 240] },
+    abil: { ranged: { range: 170, stun: 3.0, cd: 4.5 } }
+  },
+  umay: {
+    // healer: named for Umay, the Turkic protector-goddess of mothers and the
+    // newborn -- keeps nearby wounded allies patched up on a cooldown.
+    name: 'Umay Ana', armor: 1, air: false, speed: 40, px: 76, s: 38, leg: 0.28, head: 0.17,
+    kind: 'humanoid', cape: true, hair: true, eye: '#ffe9a0',
+    pal: { body: [196, 170, 110], limb: [172, 146, 92], armor: [220, 200, 150], accent: [255, 236, 180], horn: [240, 230, 200] },
+    abil: { heal: { range: 110, amount: 16, cd: 2.5 } }
+  },
+  yelbegen: {
+    // splitter: the many-headed Yelbegen of the steppe epics -- cut one head
+    // down and lesser heads scatter from the corpse (see killCreep).
+    name: 'Yelbegen', armor: 3, air: false, speed: 30, px: 118, s: 64, leg: 0.28, head: 0.155, big: true,
+    kind: 'humanoid', weapon: 'club', shoulder: true, horns: true, fangs: true, eye: '#ff6a3a',
+    pal: { body: [90, 62, 46], limb: [74, 50, 38], armor: [110, 80, 56], accent: [255, 140, 70], horn: [60, 44, 40] },
+    abil: { split: { count: 2, into: 'yelbegenYavru', hpFrac: 0.45, bountyFrac: 0.45 } }
+  },
+  yelbegenYavru: {
+    // Yelbegen's severed head, still snapping -- the splitter's child type.
+    name: 'Yelbegen Yavrusu', armor: 1, air: false, speed: 52, px: 62, s: 32, leg: 0.30, head: 0.19,
+    kind: 'humanoid', weapon: 'claw', fangs: true, horns: true, eye: '#ff6a3a',
+    pal: { body: [98, 68, 50], limb: [80, 54, 42], armor: [116, 84, 58], accent: [255, 150, 80], horn: [64, 46, 42] }
   }
 };
 
@@ -1802,7 +1837,16 @@ function buildWaves(difficulty) {
     ['ghoul', 22], ['harpy', 16], ['ogre', 8], ['gargoyle', 14], ['grunt', 20],
     ['wraith', 14], ['ogre', 11], ['harpy', 22], ['gargoyle', 18], ['wyrm', 1],
     ['wraith', 18], ['grunt', 26], ['ogre', 15], ['wraith', 22], ['gargoyle', 24],
-    ['ogre', 19], ['wraith', 26], ['grunt', 34], ['ogre', 24], ['titan', 1]
+    ['ogre', 19], ['wraith', 26], ['grunt', 34], ['ogre', 24], ['titan', 1],
+    /* Phase 1 test waves -- appended past the original 30 so every existing
+       wave's number/composition/balance is untouched. Not a curve rebalance:
+       just enough to make the three new abilities reachable in play.
+       Wave 31 mixes the ranged suppressor in with a tanky escort so there are
+       towers nearby worth silencing; wave 32 pairs the healer with the
+       splitter so a damaged Yelbegen actually gets topped up before it dies
+       and throws its brood. */
+    [['basci', 8], ['grunt', 12]],
+    [['umay', 6], ['yelbegen', 7]]
   ];
   return order.map((o, i) => {
     const raw = Array.isArray(o[0]) ? o : [o]; // normalize [type,count] to a 1-group list
@@ -1965,7 +2009,27 @@ function spawnCreep(typeKey, wave) {
     slow: 0, slowT: 0, dotT: 0, dot: 0, dotSrc: 0,
     dir: 2, frame: 0, anim: SIMRAND() * 10, alive: true, dead: false, deathT: 0,
     vx: 0, vy: 0, hitFlash: 0, r: (t.s || 34) * 0.30, z: t.air ? 26 : 0, bobP: SIMRAND() * TAU,
-    leak: t.boss ? 5 : 1, wave: wave.n
+    leak: t.boss ? 5 : 1, wave: wave.n, acd: 0
+  };
+  G.creeps.push(c);
+  return c;
+}
+/* Splitter children (Yelbegen -> Yelbegen Yavrusu, see killCreep/abil.split).
+   Mirrors spawnCreep's field shape exactly (snapshot()/applySnapshot() and
+   updateCreeps() don't distinguish a child from a wave-spawned creep) but
+   spawns at the parent's death point with a small jitter instead of at the
+   map edge, and carries HP/bounty already scaled down by the caller. */
+function spawnSplitChild(parent, intoKey, hp, bounty) {
+  const t = CREEPS[intoKey];
+  const jx = (SIMRAND() - 0.5) * TILE * 0.9, jy = (SIMRAND() - 0.5) * TILE * 0.9;
+  const c = {
+    id: G.nextId++, type: intoKey, air: t.air, boss: !!t.boss,
+    x: parent.x + jx, y: parent.y + jy,
+    hp, maxHp: hp, armor: t.armor, speed: t.speed, bounty,
+    slow: 0, slowT: 0, dotT: 0, dot: 0, dotSrc: 0,
+    dir: parent.dir, frame: 0, anim: SIMRAND() * 10, alive: true, dead: false, deathT: 0,
+    vx: 0, vy: 0, hitFlash: 0, r: (t.s || 34) * 0.30, z: t.air ? 26 : 0, bobP: SIMRAND() * TAU,
+    leak: t.boss ? 5 : 1, wave: parent.wave, acd: 0
   };
   G.creeps.push(c);
   return c;
@@ -2050,6 +2114,7 @@ function simTick() {
   }
 
   updateCreeps(dt);
+  updateCreepAbilities(dt);
   updateTowers(dt);
   updateProjectiles(dt);
 
@@ -2150,6 +2215,53 @@ function updateCreeps(dt) {
     }
   }
 }
+/* Phase 1 ability creeps -- ranged suppressor + healer. Host-only (called from
+   simTick, same as updateCreeps/updateTowers), so this never runs on the
+   guest; the guest only ever sees the RESULTS (a suppressed tower's buildT
+   slot, healed hp values) through the ordinary snapshot, plus the ranged
+   attack's visual tell through the ev()/EVQ presentational-event channel --
+   exactly like tower fire() does with 'muzzle'/'chain'. No new snapshot slot
+   needed for either ability. */
+function updateCreepAbilities(dt) {
+  for (const c of G.creeps) {
+    if (c.dead) continue;
+    const def = CREEPS[c.type];
+    if (!def.abil) continue;
+    if (c.acd > 0) c.acd -= dt;
+    if (c.acd > 0) continue;
+
+    if (def.abil.ranged) {
+      const ab = def.abil.ranged, r2 = ab.range * ab.range;
+      let best = null, bd = r2;
+      for (const t of G.towers) {
+        const d = dist2(c.x, c.y, t.x, t.y);
+        if (d <= bd) { bd = d; best = t; }
+      }
+      if (best) {
+        // reuse buildT (constraint: towers have no hp and cannot be
+        // destroyed -- this is the SAME "just placed, can't fire yet" timer
+        // updateTowers already skips on, already a synced snapshot slot,
+        // already rendered as a build-progress ring) as a suppression timer.
+        best.buildT = Math.max(best.buildT, Math.round(ab.stun * TICK_HZ));
+        ev('suppress', { x: c.x, y: c.y - c.z, tx: best.x, ty: best.y - 18 });
+        ev('sfx', { name: 'poison', x: c.x, y: c.y });
+        c.acd = ab.cd;
+      } else {
+        c.acd = 0.5; // no tower in range yet -- retry soon instead of scanning every tick
+      }
+    } else if (def.abil.heal) {
+      const ab = def.abil.heal, r2 = ab.range * ab.range;
+      for (const o of G.creeps) {
+        if (o === c || o.dead || o.air !== c.air) continue;
+        if (o.hp >= o.maxHp) continue;
+        if (dist2(c.x, c.y, o.x, o.y) > r2) continue;
+        o.hp = Math.min(o.maxHp, o.hp + ab.amount);
+        ev('healTick', { x: o.x, y: o.y - o.z });
+      }
+      c.acd = ab.cd; // cooldown either way -- a dry cast still keeps its own rhythm
+    }
+  }
+}
 function killCreep(c, ownerIdx) {
   if (c.dead) return;
   c.dead = true; c.deathT = 0.75; c.alive = false;
@@ -2158,6 +2270,18 @@ function killCreep(c, ownerIdx) {
   G.gold[o] += c.bounty; G.score[o] += c.bounty;
   // same ev()-clobbers-"type" hazard as waveStart above — use ctype, not type
   ev('kill', { x: c.x, y: c.y - c.z, boss: c.boss, gold: c.bounty, owner: o, ctype: c.type });
+  // splitter: children are pushed into G.creeps HERE, mid-tick, before this
+  // tick's wave-clear check runs again next tick -- see the note in killCreep's
+  // header comment / task brief: G.creeps.length===0 is only ever checked at
+  // the TOP of simTick, so a corpse (still in the array for its 0.75s deathT)
+  // and its freshly-spawned children both keep the wave alive correctly.
+  const def = CREEPS[c.type];
+  if (def.abil && def.abil.split) {
+    const sp = def.abil.split;
+    const childHp = Math.max(1, Math.round(c.maxHp * sp.hpFrac));
+    const childBounty = Math.max(1, Math.round(c.bounty * sp.bountyFrac));
+    for (let i = 0; i < sp.count; i++) spawnSplitChild(c, sp.into, childHp, childBounty);
+  }
 }
 
 function damage(c, amount, dmgType, ownerIdx, tower) {
@@ -2465,6 +2589,25 @@ const FX = {
       prev = h;
     }
     this.addShake(2.4);
+  },
+  /* Kara Bakşı's suppression bolt -- a purple curse-beam from caster to the
+     tower it just silenced, purely presentational (reaches the guest via
+     ev()/EVQ same as 'chain'/'muzzle'; the actual suppression is t.buildT,
+     already a synced snapshot slot). */
+  suppress(x, y, tx, ty) {
+    const pts = jaggedLine(x, y, tx, ty, 6, 6);
+    this.arc(pts, '150,90,220', 0.22, 3);
+    this.arc(pts, '230,190,255', 0.14, 1.2);
+    this.ring(tx, ty, 3, 24, '160,100,230', 0.4, 3);
+    this.light(tx, ty, 60, '150,90,220', 0.3, 1.1);
+    for (let i = 0; i < 6; i++) {
+      const a = VFX() * TAU, sp = 30 * VFX();
+      this.p({ type: 'spark', x: tx, y: ty, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.3, size: 1.2 + VFX() * 1.6, col: '180,130,240', add: true });
+    }
+  },
+  /* Umay Ana's heal pulse over the ally she just topped up. */
+  healTick(x, y) {
+    this.p({ type: 'spark', x: x + (VFX() - 0.5) * 8, y: y - VFX() * 6, vy: -20 - VFX() * 12, life: 0.5, size: 1.6 + VFX() * 1.8, col: '160,255,180', add: true, drag: 0.95 });
   },
   smite(x, y, r) {
     this.addShake(12); this.flash = 0.34; this.flashCol = '200,180,255';
@@ -3822,6 +3965,8 @@ function processEvents(list) {
       case 'acid': FX.acid(e.x, e.y, e.r); break;
       case 'poisonTick': FX.poisonTick(e.x, e.y); break;
       case 'chain': FX.chain(e.from, e.hits); break;
+      case 'suppress': FX.suppress(e.x, e.y, e.tx, e.ty); break;
+      case 'healTick': FX.healTick(e.x, e.y); break;
       case 'smite': FX.smite(e.x, e.y, e.r); break;
       case 'blizzard': FX.blizzard = 1.4; FX.blizzardBurst(e.x || WORLD_W / 2, e.y || WORLD_H / 2); break;
       case 'kill':
