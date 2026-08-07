@@ -3168,21 +3168,35 @@ const R = {
     this.cv.style.width = this.W + 'px'; this.cv.style.height = this.H + 'px';
     const g = makeCanvas(this.W * 0.5, this.H * 0.5); this.glow = g.c; this.gx = g.x;
     const l = makeCanvas(this.W * 0.5, this.H * 0.5); this.lightCv = l.c; this.lx = l.x;
-    this.fitCamera();
+    // relayout, NOT fitCamera: a resize must never move the player's view.
+    // Mobile browsers fire resize constantly while you drag, because the URL
+    // bar hides and shows in response to the gesture -- routing that through
+    // fitCamera() snapped the camera back to the centre of the map mid-pan,
+    // which is the "panning sticks and throws me backwards" bug.
+    this.relayout();
   },
-  fitCamera() {
+  /* Recomputes everything that depends on viewport size + HUD geometry, while
+     PRESERVING where the player is looking and how far they have zoomed. */
+  relayout() {
     const M = hudMetrics(this.W, this.H);
-    const uiTop = M.top, uiBot = M.bot;
-    const availH = Math.max(160, this.H - uiTop - uiBot);
+    const availH = Math.max(160, this.H - M.top - M.bot);
     const zFit = Math.min(this.W / WORLD_W, availH / WORLD_H);
     const zCover = Math.max(this.W / WORLD_W, availH / WORLD_H);
     // wide screens see the whole battlefield; tall phones zoom in and pan.
     // portrait allows a deeper zoom so the 2.2:1 map fills the tall viewport
     // instead of sitting in a thick letterbox.
-    const z = Math.max(zFit, Math.min(zCover, M.portrait ? 0.84 : 0.62));
-    this.cam.z = this.cam.tz = z;
+    this.cam.tz = Math.max(zFit, Math.min(zCover, M.portrait ? 0.84 : 0.62));
+    // keep the player's own zoom, only re-clamping it into the new valid band
+    this.cam.z = clamp(this.cam.z || this.cam.tz, this.cam.tz * 0.9, this.cam.tz * 3.2);
+    this.viewTop = M.top; this.viewBot = M.viewBot; this.uiBot = M.bot;
+    clampCam();
+  },
+  /* Full reset — recentres and restores default zoom. Only for a genuinely
+     new view: boot, a new run, or a map change. Never for a resize. */
+  fitCamera() {
+    this.relayout();
+    this.cam.z = this.cam.tz;
     this.cam.x = WORLD_W / 2; this.cam.y = WORLD_H / 2;
-    this.viewTop = uiTop; this.viewBot = M.viewBot; this.uiBot = uiBot;
     clampCam();
   },
   viewMidY() { return (this.viewTop + (this.H - this.viewBot)) / 2; },
@@ -4574,6 +4588,14 @@ function bindInput(cv) {
     lastPan = p;
   });
   cv.addEventListener('pointercancel', e => releasePointer(e.pointerId));
+  /* Safety net. setPointerCapture can fail (we swallow that above), and a
+     phone can drop a pointerup entirely -- either way a stale entry would sit
+     in `pointers` forever, and since two entries suspend panning, the map
+     would go permanently dead. Cleaning up at the window level too means a
+     release that never reaches the canvas still unsticks it. releasePointer
+     is idempotent, so the canvas handler running first is harmless. */
+  window.addEventListener('pointerup', e => releasePointer(e.pointerId));
+  window.addEventListener('pointercancel', e => releasePointer(e.pointerId));
   cv.addEventListener('pointerup', e => {
     const p = pos(e);
     const wasActive = e.pointerId === activeId;
@@ -4640,7 +4662,11 @@ function bindInput(cv) {
 }
 function clampCam() {
   const c = R.cam;
-  const halfW = R.W / 2 / c.z, halfH = Math.max(80, R.H - R.viewTop - R.uiBot) / 2 / c.z;
+  // viewBot, not uiBot: the visible world band is viewTop .. H-viewBot, which
+  // is exactly what viewMidY()/worldToScreen() centre on. Using uiBot here
+  // (10px smaller on wide layouts) let the camera drift slightly past the
+  // world edge, disagreeing with the mapping it is supposed to match.
+  const halfW = R.W / 2 / c.z, halfH = Math.max(80, R.H - R.viewTop - R.viewBot) / 2 / c.z;
   const mx = Math.max(0, WORLD_W / 2 - halfW), my = Math.max(0, WORLD_H / 2 - halfH);
   c.x = clamp(c.x, WORLD_W / 2 - mx, WORLD_W / 2 + mx);
   c.y = clamp(c.y, WORLD_H / 2 - my, WORLD_H / 2 + my);
