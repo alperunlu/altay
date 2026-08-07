@@ -47,6 +47,11 @@
     padding:13px 10px;border-radius:9px;font-size:16px;color:#FFE7B0;background:rgba(8,8,12,.85);
     border:1px solid rgba(214,172,92,.42);outline:none;min-width:0}
   input:focus{border-color:#D6AC5C}
+  select{display:block;width:100%;font-family:inherit;font-weight:800;letter-spacing:.06em;
+    text-align:center;text-align-last:center;padding:13px 14px;border-radius:9px;font-size:14px;
+    color:#FFE7B0;background:rgba(8,8,12,.85);border:1px solid rgba(214,172,92,.42);outline:none;
+    cursor:pointer;appearance:none;-webkit-appearance:none}
+  select:focus{border-color:#D6AC5C}
   .row button{margin:0;width:auto;padding:13px 18px}
   #lobbyMsg{min-height:34px;font-family:system-ui,sans-serif;font-size:12.5px;color:#C7BCA4;margin-top:10px;line-height:1.5}
   /* boot */
@@ -90,14 +95,6 @@
     <h1>ALTAY</h1>
     <div class="kicker">Gök Kapısını Tut</div>
     <p class="lead">Erlik'in orduları bozkırdan yürüyor. Kulelerinle labirent ör, otuz dalgayı geri püskürt, kapıyı düşürme.</p>
-    <div class="kicker" style="margin-bottom:6px">Zorluk</div>
-    <div class="row" id="diffRow" style="justify-content:center;margin-bottom:18px">
-      <button id="diffEasy" data-diff="easy">Kolay</button>
-      <button id="diffNormal" data-diff="normal" class="primary">Normal</button>
-      <button id="diffHard" data-diff="hard">Zor</button>
-    </div>
-    <div class="kicker" style="margin-bottom:6px">Harita</div>
-    <div class="row" id="mapRow" style="justify-content:center;flex-wrap:wrap;row-gap:8px;margin-bottom:52px"></div>
     <button class="primary" id="btnSolo">Tek başına oyna</button>
     <button id="btnHost">Oda kur ve arkadaş çağır</button>
     <button id="btnJoinShow">Odaya katıl</button>
@@ -108,6 +105,22 @@
     <div id="lobbyMsg"></div>
     <button class="ghost" id="btnHelp">Nasıl oynanır?</button>
     <button class="ghost" id="btnMeta">Kalıcı Yükseltmeler</button>
+  </div>
+</div>
+
+<div id="setup" class="overlay hidden">
+  <div class="card">
+    <h1 id="setupTitle" style="font-size:22px">Oyun Ayarları</h1>
+    <div class="kicker" style="margin-bottom:6px">Zorluk</div>
+    <div class="row" id="diffRow" style="justify-content:center;margin-bottom:24px">
+      <button id="diffEasy" data-diff="easy">Kolay</button>
+      <button id="diffNormal" data-diff="normal" class="primary">Normal</button>
+      <button id="diffHard" data-diff="hard">Zor</button>
+    </div>
+    <div class="kicker" style="margin-bottom:6px">Harita</div>
+    <select id="mapSelect" style="margin-bottom:24px"></select>
+    <button class="primary" id="setupGo">Devam Et</button>
+    <button class="ghost" id="setupBack">Geri</button>
   </div>
 </div>
 
@@ -4987,6 +5000,20 @@ function secureOk() {
 }
 const NOPEER = 'Çevrimiçi kütüphaneye ulaşılamadı.<br><span style="opacity:.7">İnternet bağlantısını, reklam engelleyiciyi veya VPN\'i kontrol et. Tek başına oynamak her zaman çalışır.</span>';
 
+/* Which action opened the #setup screen ('solo' or 'host') -- setupGo's
+   handler branches on this to know what to actually start once the player
+   confirms their difficulty/map pick. Join skips this screen entirely: a
+   guest inherits the host's difficulty/map (see applyDifficulty/applySnapshot's
+   'ms' handling), so there is nothing for them to choose here. */
+let setupMode = 'solo';
+function openSetup(mode) {
+  setupMode = mode;
+  $('setupTitle').textContent = mode === 'host' ? 'Oda Ayarları' : 'Oyun Ayarları';
+  $('setupGo').textContent = mode === 'host' ? 'Oda Kur' : 'Başla';
+  $('lobby').classList.add('hidden');
+  $('setup').classList.remove('hidden');
+}
+function closeSetup() { $('setup').classList.add('hidden'); }
 function wireShell() {
   ['diffEasy', 'diffNormal', 'diffHard'].forEach(id => {
     $(id).onclick = () => {
@@ -4994,29 +5021,36 @@ function wireShell() {
       ['diffEasy', 'diffNormal', 'diffHard'].forEach(x => $(x).classList.toggle('primary', x === id));
     };
   });
-  // Map buttons are built from MAPS rather than hand-written in the HTML like
-  // the 3 difficulty buttons, since there are more of them and the list may
-  // grow -- one source of truth. G.mapSeed already exists (Phase 0's
-  // resetRun); only the host's pick matters (see the snapshot 'ms' field
-  // guests sync against in applySnapshot), so this row's own click handlers
-  // just set local state, same pattern as the difficulty row.
-  const mapRow = $('mapRow');
+  // A <select> dropdown rather than one button per map (there were 5, hand-
+  // written buttons don't scale and the user asked for a dropdown
+  // specifically). Built from MAPS -- one source of truth, same as before.
+  // Only the host's pick matters (see the snapshot 'ms' field guests sync
+  // against in applySnapshot); this element's change handler just sets
+  // local state, same as the difficulty row.
+  const mapSelect = $('mapSelect');
   MAPS.forEach(m => {
-    const btn = document.createElement('button');
-    btn.textContent = m.name; btn.dataset.mapId = m.id;
-    if (m.seed === G.mapSeed) btn.classList.add('primary');
-    btn.onclick = () => {
-      G.mapSeed = m.seed;
-      [...mapRow.children].forEach(x => x.classList.toggle('primary', x === btn));
-    };
-    mapRow.appendChild(btn);
+    const opt = document.createElement('option');
+    opt.value = m.seed; opt.textContent = m.name;
+    if (m.seed === G.mapSeed) opt.selected = true;
+    mapSelect.appendChild(opt);
   });
+  mapSelect.onchange = () => { G.mapSeed = Number(mapSelect.value); };
   $('btnMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
   $('metaClose').onclick = () => $('meta').classList.add('hidden');
-  $('btnSolo').onclick = () => { NET.active = false; NET.me = 0; resetRun(G.mapSeed); closeLobby(); Audio2.init(); };
-  $('btnHost').onclick = async () => {
+  $('btnSolo').onclick = () => openSetup('solo');
+  $('btnHost').onclick = () => { $('joinRow').classList.add('hidden'); openSetup('host'); };
+  $('setupBack').onclick = () => { closeSetup(); $('lobby').classList.remove('hidden'); };
+  $('setupGo').onclick = async () => {
+    if (setupMode === 'solo') {
+      NET.active = false; NET.me = 0; resetRun(G.mapSeed); closeSetup(); closeLobby(); Audio2.init();
+      return;
+    }
+    // host: back to the main lobby card so netHost's own status updates
+    // (room code, "bekleniyor…", connection errors) render into lobbyMsg
+    // exactly like before this screen existed. netHost() itself calls
+    // resetRun(G.mapSeed) immediately, baking the chosen map right away.
     Audio2.init();
-    $('joinRow').classList.add('hidden');
+    closeSetup(); $('lobby').classList.remove('hidden');
     if (!secureOk()) return;
     if (!await ensurePeer()) { lobbyMsg(NOPEER); return; }
     lobbyMsg('Oda açılıyor…');
