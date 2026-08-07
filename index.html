@@ -91,11 +91,13 @@
     <div class="kicker">Gök Kapısını Tut</div>
     <p class="lead">Erlik'in orduları bozkırdan yürüyor. Kulelerinle labirent ör, otuz dalgayı geri püskürt, kapıyı düşürme.</p>
     <div class="kicker" style="margin-bottom:6px">Zorluk</div>
-    <div class="row" id="diffRow" style="justify-content:center;margin-bottom:52px">
+    <div class="row" id="diffRow" style="justify-content:center;margin-bottom:18px">
       <button id="diffEasy" data-diff="easy">Kolay</button>
       <button id="diffNormal" data-diff="normal" class="primary">Normal</button>
       <button id="diffHard" data-diff="hard">Zor</button>
     </div>
+    <div class="kicker" style="margin-bottom:6px">Harita</div>
+    <div class="row" id="mapRow" style="justify-content:center;flex-wrap:wrap;row-gap:8px;margin-bottom:52px"></div>
     <button class="primary" id="btnSolo">Tek başına oyna</button>
     <button id="btnHost">Oda kur ve arkadaş çağır</button>
     <button id="btnJoinShow">Odaya katıl</button>
@@ -1958,6 +1960,18 @@ const DIFFICULTY = {
   normal: { hp: 1,    bounty: 1,    lives: 20 },
   hard:   { hp: 1.30, bounty: 0.85, lives: 16 }
 };
+/* Hand-picked seeds for generateMap(), named as lobby-facing map choices.
+   Any integer seed works (generateMap retries seed+1 on an unreachable
+   layout), these five just happen to produce visibly distinct rock/corridor
+   arrangements. 20260803 is the original single hardcoded map this game
+   shipped with, kept first so existing behavior stays the default pick. */
+const MAPS = [
+  { id: 'classic', name: 'Ötüken Ovası', seed: 20260803 },
+  { id: 'm2', name: 'Kara Geçit', seed: 7 },
+  { id: 'm3', name: 'Taş Vadi', seed: 1453 },
+  { id: 'm4', name: 'Gök Boğazı', seed: 999 },
+  { id: 'm5', name: 'Bozkır Yolu', seed: 42 }
+];
 function buildWaves(difficulty) {
   const scale = DIFFICULTY[difficulty] || DIFFICULTY.normal;
   const order = [
@@ -2029,7 +2043,10 @@ const G = {
   spawn: { gx: 0, gy: GH >> 1 }, exit: { gx: GW - 1, gy: GH >> 1 },
   spell: [{ cd: 0 }, { cd: 0 }],  // 0 lightning, 1 blizzard
   speed: 1, autoStart: false, endless: false,
-  spawnGroupIdx: 0, difficulty: 'normal'
+  spawnGroupIdx: 0, difficulty: 'normal',
+  mapSeed: 20260803 // matches MAPS[0] ('classic'); wireShell() runs before
+  // bootstrap() sets this again, so it must already be defined here or the
+  // lobby's map row would render with no button pre-selected
 };
 
 function idxOf(gx, gy) { return gy * GW + gx; }
@@ -4389,7 +4406,7 @@ function snapshot() {
   for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest, Math.round(t.acd * 20) / 20, t.branch == null ? -1 : t.branch]);
   const pr = [];
   for (const p of G.projs) pr.push([['arrow', 'shell', 'shard', 'blob'].indexOf(p.kind), Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.ang * 100) / 100]);
-  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ev: EVQ.slice() };
+  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ms: G.mapSeed, ev: EVQ.slice() };
   if (NET.gridDirty) { s.g = Array.from(G.grid); NET.gridDirty = false; }
   return s;
 }
@@ -4398,6 +4415,17 @@ function applySnapshot(s) {
   G.prepTimer = s.pt; G.spawnLeft = s.sl; G.spawnGroupIdx = s.sg | 0; G.killed = s.kd; G.leaked = s.lk; G.score = s.sc;
   if (s.sd) G.speed = s.sd;
   G.spell[0].cd = s.sp[0]; G.spell[1].cd = s.sp[1];
+  // Item 6 (multiple maps): the host may be running a different seed than
+  // whatever this client last baked (its own boot default, or a stale
+  // previous map). `ms` is a cheap scalar to compare -- when it changes,
+  // regenerate + rebake locally so the ART matches the occupancy grid about
+  // to be applied below. Gated on an actual seed change so this does NOT
+  // fire on every ordinary build/sell (those also set NET.gridDirty, but
+  // never touch G.mapSeed) -- ordinary tower placement never rebakes terrain.
+  if (s.ms !== undefined && s.ms !== G.mapSeed) {
+    G.mapSeed = s.ms;
+    generateMap(G.mapSeed); placeDecor(); bakeTerrain(G.grid); R.fitCamera();
+  }
   if (s.g) { G.grid = Uint8Array.from(s.g); computeFlow(); }
   const old = new Map(G.creeps.map(c => [c.id, c]));
   G.creeps = s.cr.map(a => {
@@ -4465,7 +4493,7 @@ function applyDifficulty() {
 function netHost(code, attempt) {
   attempt = attempt || 0;
   NET.active = true; NET.isHost = true; NET.me = 0; NET.room = code; NET.status = 'oda ' + code + ' · bekleniyor';
-  setCoopEconomy(); applyDifficulty();
+  resetRun(G.mapSeed); // also runs setCoopEconomy()/applyDifficulty() since NET.active is already true
   let opened = false;
   let p;
   try { p = new window.Peer('otuken-' + code, { debug: 0, config: ICE }); }
@@ -4660,7 +4688,24 @@ function wireShell() {
       ['diffEasy', 'diffNormal', 'diffHard'].forEach(x => $(x).classList.toggle('primary', x === id));
     };
   });
-  $('btnSolo').onclick = () => { NET.active = false; NET.me = 0; applyDifficulty(); closeLobby(); Audio2.init(); };
+  // Map buttons are built from MAPS rather than hand-written in the HTML like
+  // the 3 difficulty buttons, since there are more of them and the list may
+  // grow -- one source of truth. G.mapSeed already exists (Phase 0's
+  // resetRun); only the host's pick matters (see the snapshot 'ms' field
+  // guests sync against in applySnapshot), so this row's own click handlers
+  // just set local state, same pattern as the difficulty row.
+  const mapRow = $('mapRow');
+  MAPS.forEach(m => {
+    const btn = document.createElement('button');
+    btn.textContent = m.name; btn.dataset.mapId = m.id;
+    if (m.seed === G.mapSeed) btn.classList.add('primary');
+    btn.onclick = () => {
+      G.mapSeed = m.seed;
+      [...mapRow.children].forEach(x => x.classList.toggle('primary', x === btn));
+    };
+    mapRow.appendChild(btn);
+  });
+  $('btnSolo').onclick = () => { NET.active = false; NET.me = 0; resetRun(G.mapSeed); closeLobby(); Audio2.init(); };
   $('btnHost').onclick = async () => {
     Audio2.init();
     $('joinRow').classList.add('hidden');
