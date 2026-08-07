@@ -107,6 +107,16 @@
     </div>
     <div id="lobbyMsg"></div>
     <button class="ghost" id="btnHelp">Nasıl oynanır?</button>
+    <button class="ghost" id="btnMeta">Kalıcı Yükseltmeler</button>
+  </div>
+</div>
+
+<div id="meta" class="overlay hidden">
+  <div class="card">
+    <h1 style="font-size:22px">Kalıcı Yükseltmeler</h1>
+    <div class="kicker">Şan: <span id="metaCurrency">0</span></div>
+    <div id="metaTree"></div>
+    <button class="primary" id="metaClose">Kapat</button>
   </div>
 </div>
 
@@ -120,6 +130,7 @@
     <button id="mAuto">Otomatik dalga: kapalı</button>
     <button id="mEnd">Sonsuz mod: kapalı</button>
     <button id="mHelp">Nasıl oynanır?</button>
+    <button id="mMeta">Kalıcı Yükseltmeler</button>
     <button class="ghost" id="mRestart">Baştan başla</button>
   </div>
 </div>
@@ -1972,6 +1983,52 @@ const MAPS = [
   { id: 'm4', name: 'Gök Boğazı', seed: 999 },
   { id: 'm5', name: 'Bozkır Yolu', seed: 42 }
 ];
+
+/* ============================================================
+   META-PROGRESSION (item 4) -- persists across runs via localStorage.
+   A small, deliberately modest permanent upgrade tree funded by "Şan"
+   (Glory), earned at the end of each run. Kept conservative (max +15%
+   damage, +10 lives, +125 starting gold, -20% spell cooldown at full level)
+   since it sits on top of a 30-wave balance that was itself only recently
+   fixed and is still unmeasured -- see the plan doc's balance guidance.
+   ============================================================ */
+const META_KEY = 'altay_meta_v1';
+const META_TREE = {
+  gold:  { name: 'Bozkır Hazinesi', desc: 'Başlangıç altını +25 (koşu başına)', max: 5, cost: [40, 80, 130, 190, 260], perLevel: 25 },
+  dmg:   { name: 'Demirci Ustası',  desc: 'Tüm kulelerin hasarı +%3',           max: 5, cost: [50, 100, 160, 230, 310], perLevel: 0.03 },
+  lives: { name: 'Kutlu Kapı',      desc: 'Başlangıç canı +2',                  max: 5, cost: [50, 100, 160, 230, 310], perLevel: 2 },
+  spell: { name: 'Gök Bilgesi',     desc: 'Büyü bekleme süresi -%4',            max: 5, cost: [60, 120, 190, 270, 360], perLevel: 0.04 }
+};
+const EMPTY_META = { currency: 0, lv: {} };
+function loadMeta() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(META_KEY));
+    if (raw && typeof raw === 'object') return { currency: raw.currency | 0, lv: raw.lv || {} };
+  } catch (e) { /* localStorage unavailable (private mode, quota, etc) -- fall back to a fresh profile */ }
+  return { currency: 0, lv: {} };
+}
+function saveMeta() { try { localStorage.setItem(META_KEY, JSON.stringify(META)); } catch (e) { } }
+let META = loadMeta();
+function metaLevel(profile, key) { return (profile && profile.lv && profile.lv[key] | 0) || 0; }
+function metaBonus(profile, key) { return metaLevel(profile, key) * META_TREE[key].perLevel; }
+/* Co-op fairness (per the plan doc): each player's meta profile benefits
+   THEIR OWN towers only (resolved by t.owner at the point damage is dealt --
+   see fire()), never the other player's. Shared resources (starting lives,
+   the two global spells' cooldowns) use the AUTHORITATIVE side's profile --
+   i.e. whichever machine actually runs resetRun()/simTick() (solo: the
+   local machine; co-op: the host), since a guest never runs either. A
+   guest's profile reaches the host once, right after connecting, via a
+   `{t:'meta'}` message (see netJoin/netHost's conn handlers) and is cached
+   as NET.guestMeta; nothing here is re-synced through snapshot() since it
+   is player-local bookkeeping, not simulation state. */
+function metaProfileFor(owner) { return (NET.active && owner === 1) ? (NET.guestMeta || EMPTY_META) : META; }
+function metaDmgMult(owner) { return 1 + metaBonus(metaProfileFor(owner), 'dmg'); }
+function awardMetaCurrency(won) {
+  const diffMult = { easy: 0.8, normal: 1, hard: 1.3 }[G.difficulty] || 1;
+  const gained = Math.round((G.waveIdx * 4 + (won ? 40 : 0)) * diffMult);
+  META.currency += gained; saveMeta();
+  return gained;
+}
 function buildWaves(difficulty) {
   const scale = DIFFICULTY[difficulty] || DIFFICULTY.normal;
   const order = [
@@ -2537,9 +2594,15 @@ function updateTowers(dt) {
 }
 function fire(t, tgt, px, py) {
   const def = towerDef(t), st = towerStat(t);
+  // Meta-progression's damage bonus (item 4) is applied HERE, at the single
+  // choke point where st.dmg (a shared, static TOWERS[...] object -- never
+  // mutate it in place) turns into an actual damage value, exactly the same
+  // pattern item 3's buffMult uses for fire rate: multiply at the point of
+  // use, never inside towerStat() itself.
+  const mdm = metaDmgMult(t.owner);
   if (def.proj === 'chain') {
     // instant chain lightning
-    const hits = []; let cur = tgt, dmg = st.dmg;
+    const hits = []; let cur = tgt, dmg = st.dmg * mdm;
     const seen = new Set();
     for (let i = 0; i < def.chain; i++) {
       if (!cur) break;
@@ -2561,7 +2624,7 @@ function fire(t, tgt, px, py) {
   const speed = def.proj === 'arrow' ? 620 : def.proj === 'shell' ? 340 : def.proj === 'shard' ? 420 : 300;
   const p = {
     id: G.nextId++, kind: def.proj, x: t.x + Math.cos(t.angle) * 18, y: t.y - 22 + Math.sin(t.angle) * 10,
-    tx: px, ty: py, target: tgt.id, speed, dmg: st.dmg, dmgType: def.dmgType,
+    tx: px, ty: py, target: tgt.id, speed, dmg: st.dmg * mdm, dmgType: def.dmgType,
     splash: def.splash || 0, owner: t.owner, tower: t, life: 3, z: 20, vz: 0, arc: def.proj === 'shell' || def.proj === 'blob',
     ang: t.angle, trail: []
   };
@@ -2650,7 +2713,10 @@ const SPELLS = [
 ];
 function castSpell(idx, x, y, owner) {
   const s = G.spell[idx]; if (s.cd > 0) return false;
-  s.cd = SPELLS[idx].cd * TICK_HZ;
+  // Spell cooldowns are shared (one pool for both co-op players), so like
+  // lives this always uses META (the authoritative/local side's own
+  // profile), regardless of which player actually cast it.
+  s.cd = SPELLS[idx].cd * TICK_HZ * (1 - metaBonus(META, 'spell'));
   if (idx === 0) {
     const r2 = SPELLS[0].r * SPELLS[0].r;
     for (const c of G.creeps) if (!c.dead && dist2(x, y, c.x, c.y - c.z) <= r2) damage(c, SPELLS[0].dmg, 'chaos', owner, null);
@@ -3609,7 +3675,7 @@ const UI = {
 };
 const NET = {
   active: false, isHost: true, me: 0, peer: null, conn: null, room: '', status: 'solo',
-  lastSend: 0, gridDirty: true, ping: 0, buf: [],
+  lastSend: 0, gridDirty: true, ping: 0, buf: [], guestMeta: null,
   send(o) { if (this.conn && this.conn.open) { try { this.conn.send(o); } catch (e) { } } }
 };
 
@@ -4149,6 +4215,12 @@ function resetRun(seed) {
   G.prepTimer = 30 * TICK_HZ;
   G.gold = [SOLO_START_GOLD, SOLO_START_GOLD];
   if (NET.active) setCoopEconomy();
+  // Meta gold bonus (item 4) is per-player: owner 0 is always this machine's
+  // own profile (solo or host), owner 1 -- only meaningful in co-op -- is
+  // the guest's profile once its handshake has arrived (NET.guestMeta),
+  // same resolution metaProfileFor() uses for the damage bonus.
+  G.gold[0] += Math.round(metaBonus(META, 'gold'));
+  if (NET.active) G.gold[1] += Math.round(metaBonus(NET.guestMeta || EMPTY_META, 'gold'));
   G.score = [0, 0]; G.leaked = 0; G.killed = 0;
   G.creeps = []; G.towers = []; G.projs = []; G.nextId = 1;
   G.spell[0].cd = 0; G.spell[1].cd = 0;
@@ -4381,8 +4453,12 @@ function processEvents(list) {
       case 'early': UI.toast(`Erken çağrı bonusu +${e.bonus}`, '#ffd76a'); break;
       case 'build': Audio2.play('build'); FX.ring(e.x, e.y, 4, 34, '255,220,140', 0.4, 3); break;
       case 'sell': Audio2.play('sell'); FX.ring(e.x, e.y, 4, 30, '200,220,255', 0.35, 2); break;
-      case 'won': Audio2.play('victory'); break;
-      case 'lost': Audio2.play('defeat'); break;
+      // This handler runs on both host and guest (events flow through
+      // EVQ -> NET.buf -> the guest's own processEvents), so each machine
+      // awards its OWN local META currency independently here rather than
+      // this being simulation state that needs syncing.
+      case 'won': Audio2.play('victory'); UI.toast(`+${awardMetaCurrency(true)} Şan`, '#ffd76a'); break;
+      case 'lost': Audio2.play('defeat'); UI.toast(`+${awardMetaCurrency(false)} Şan`, '#ffd76a'); break;
       case 'sfx': Audio2.play(e.name, 0.7, panOf(e.x)); break;
     }
   }
@@ -4488,7 +4564,11 @@ function setCoopEconomy() { G.gold[0] = G.gold[1] = COOP_START_GOLD; }
    need one and is left for later. */
 function applyDifficulty() {
   WAVES = buildWaves(G.difficulty);
-  G.lives = (DIFFICULTY[G.difficulty] || DIFFICULTY.normal).lives;
+  // Lives are a shared co-op resource, so the meta bonus here always comes
+  // from META (this machine's own profile) -- applyDifficulty only ever
+  // runs on the authoritative side (solo, or the host via resetRun/netHost),
+  // never on a guest, same reasoning as metaProfileFor's doc comment.
+  G.lives = (DIFFICULTY[G.difficulty] || DIFFICULTY.normal).lives + Math.round(metaBonus(META, 'lives'));
 }
 function netHost(code, attempt) {
   attempt = attempt || 0;
@@ -4509,7 +4589,7 @@ function netHost(code, attempt) {
   p.on('connection', conn => {
     NET.conn = conn;
     conn.on('open', () => { NET.status = 'bağlı'; NET.gridDirty = true; closeLobby(); UI.toast('Müttefik katıldı!', '#8fe08a'); });
-    conn.on('data', d => { if (d.t === 'cmd') applyCmd(d.c, 1); else if (d.t === 'ping') NET.send({ t: 'pong', a: d.a }); });
+    conn.on('data', d => { if (d.t === 'cmd') applyCmd(d.c, 1); else if (d.t === 'meta') NET.guestMeta = d.m; else if (d.t === 'ping') NET.send({ t: 'pong', a: d.a }); });
     conn.on('close', () => { NET.status = 'bağlantı koptu'; UI.toast('Müttefik ayrıldı', '#ff9a8a'); });
   });
   p.on('error', e => {
@@ -4533,7 +4613,10 @@ function netJoin(code) {
   p.on('open', () => {
     const conn = p.connect('otuken-' + code, { reliable: true });
     NET.conn = conn;
-    conn.on('open', () => { NET.status = 'bağlı'; closeLobby(); UI.toast('Odaya katıldın', '#8fe08a'); });
+    conn.on('open', () => {
+      NET.status = 'bağlı'; closeLobby(); UI.toast('Odaya katıldın', '#8fe08a');
+      NET.send({ t: 'meta', m: META }); // let the host resolve our meta bonuses by owner (see metaProfileFor)
+    });
     conn.on('data', d => { if (d.t === 's') applySnapshot(d); });
     conn.on('error', () => lobbyMsg('Odaya ulaşılamadı. Kodu kontrol et.'));
     setTimeout(() => { if (NET.status !== 'bağlı') lobbyMsg('Odaya ulaşılamadı. Kodu kontrol et.'); }, 6000);
@@ -4639,6 +4722,29 @@ function syncMenu() {
   $('mEnd').textContent = 'Sonsuz mod: ' + (G.endless ? 'açık' : 'kapalı');
 }
 function randomCode() { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += c[(Math.random() * c.length) | 0]; return s; }
+function renderMetaTree() {
+  $('metaCurrency').textContent = META.currency;
+  const el = $('metaTree'); el.innerHTML = '';
+  for (const key in META_TREE) {
+    const t = META_TREE[key], lv = metaLevel(META, key), maxed = lv >= t.max;
+    const cost = maxed ? null : t.cost[lv];
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.cssText = 'justify-content:space-between;align-items:center;text-align:left;margin:12px 0';
+    const info = document.createElement('div');
+    info.innerHTML = `<b style="color:#ffe0a0">${t.name}</b> <span class="dim">(${lv}/${t.max})</span><br><span class="dim" style="font-size:11px">${t.desc}</span>`;
+    const btn = document.createElement('button');
+    btn.style.cssText = 'width:auto;flex:none;padding:10px 14px;margin:0';
+    btn.textContent = maxed ? 'MAKS' : `Yükselt · ${cost}`;
+    if (maxed || META.currency < cost) btn.disabled = true;
+    if (!maxed) btn.onclick = () => {
+      if (META.currency < cost) return;
+      META.currency -= cost; META.lv[key] = lv + 1; saveMeta(); renderMetaTree();
+    };
+    row.appendChild(info); row.appendChild(btn);
+    el.appendChild(row);
+  }
+}
 
 /* PeerJS is a CDN dependency; load it lazily and try several mirrors so one
    blocked host (ad-blocker, corporate DNS, regional filtering) is not fatal. */
@@ -4705,6 +4811,8 @@ function wireShell() {
     };
     mapRow.appendChild(btn);
   });
+  $('btnMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
+  $('metaClose').onclick = () => $('meta').classList.add('hidden');
   $('btnSolo').onclick = () => { NET.active = false; NET.me = 0; resetRun(G.mapSeed); closeLobby(); Audio2.init(); };
   $('btnHost').onclick = async () => {
     Audio2.init();
@@ -4730,6 +4838,7 @@ function wireShell() {
   $('mEnd').onclick = () => { G.endless = !G.endless; syncMenu(); };
   $('mRestart').onclick = () => { issue({ k: 'restart' }); closeMenu(); };
   $('mHelp').onclick = () => { $('help').classList.toggle('hidden'); };
+  $('mMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
   $('helpClose').onclick = () => $('help').classList.add('hidden');
   $('btnHelp').onclick = () => $('help').classList.remove('hidden');
   document.addEventListener('contextmenu', e => e.preventDefault());
