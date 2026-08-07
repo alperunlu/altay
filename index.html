@@ -2101,9 +2101,10 @@ const G = {
   spell: [{ cd: 0 }, { cd: 0 }],  // 0 lightning, 1 blizzard
   speed: 1, autoStart: false, endless: false,
   spawnGroupIdx: 0, difficulty: 'normal',
-  mapSeed: 20260803 // matches MAPS[0] ('classic'); wireShell() runs before
+  mapSeed: 20260803, // matches MAPS[0] ('classic'); wireShell() runs before
   // bootstrap() sets this again, so it must already be defined here or the
   // lobby's map row would render with no button pre-selected
+  heroes: [null, null] // populated by resetRun(); heroes[1] only in co-op
 };
 
 function idxOf(gx, gy) { return gy * GW + gx; }
@@ -2332,6 +2333,99 @@ function branchTower(t, owner, b) {
 const EVQ = []; // presentation events consumed by renderer/audio
 function ev(type, o) { o = o || {}; o.type = type; EVQ.push(o); }
 
+/* ============================================================
+   HERO (item 7) -- one player-controlled unit per player.
+   Deliberately scoped down from a full melee/engage state machine: the
+   original plan doc flagged this as the largest, riskiest item and
+   recommended treating it as a separate program once items 1-6 were
+   playtested. Implemented now anyway per instruction to keep going, but
+   kept simple on purpose rather than building unit-vs-unit combat states:
+   the hero auto-attacks the nearest creep in range like a mobile tower, and
+   takes simple proximity "contact" chip damage from nearby ground creeps,
+   instead of a stop-and-fight/engagement model. Movement is straight-line
+   toward a player-clicked point -- the same locomotion air creeps already
+   use (they too ignore the flow field and beeline for a fixed target), just
+   aimed at wherever the owning player last clicked instead of the exit.
+   ============================================================ */
+const HERO_DEF = {
+  name: 'Alp', armor: 3, air: false, speed: 82, px: 84, s: 44, leg: 0.30, head: 0.16,
+  kind: 'humanoid', weapon: 'sword', armorPlate: true, shoulder: true, eye: '#ffe7b0',
+  pal: { body: [92, 68, 46], limb: [72, 54, 38], armor: [188, 154, 92], accent: [255, 224, 142], horn: [230, 220, 200] }
+};
+const HERO_STATS = {
+  hp: 420, dmg: 34, range: 70, atkRate: 0.55, contactDmg: 6, contactRadius: 30,
+  killsPerLevel: 4, maxLevel: 8, hpPerLevel: 45, dmgPerLevel: 6, respawnSec: 18
+};
+function heroSpawnPoint(owner) {
+  // the gate the heroes defend -- same tile the creeps are marching toward
+  return { x: G.exit.gx * TILE + TILE / 2, y: (G.exit.gy + (owner === 0 ? -1 : 1)) * TILE + TILE / 2 };
+}
+function spawnHero(owner) {
+  const p = heroSpawnPoint(owner);
+  return {
+    owner, x: p.x, y: p.y, tx: p.x, ty: p.y, vx: 0, vy: 0, dir: 4, frame: 0, anim: 0,
+    hp: HERO_STATS.hp, maxHp: HERO_STATS.hp, level: 1, kills: 0, cd: 0, dead: false, respawnT: 0, hitFlash: 0
+  };
+}
+function heroDmg(h) { return HERO_STATS.dmg + (h.level - 1) * HERO_STATS.dmgPerLevel; }
+function heroMaxHp(h) { return HERO_STATS.hp + (h.level - 1) * HERO_STATS.hpPerLevel; }
+function updateHeroes(dt) {
+  for (const h of G.heroes) {
+    if (!h) continue;
+    if (h.hitFlash > 0) h.hitFlash -= dt;
+    if (h.dead) {
+      h.respawnT -= dt;
+      if (h.respawnT <= 0) {
+        const p = heroSpawnPoint(h.owner);
+        h.x = p.x; h.y = p.y; h.tx = p.x; h.ty = p.y;
+        h.maxHp = heroMaxHp(h); h.hp = h.maxHp; h.dead = false;
+      }
+      continue;
+    }
+    let dx = h.tx - h.x, dy = h.ty - h.y; const d = Math.hypot(dx, dy) || 1;
+    if (d > 4) { h.vx = dx / d * HERO_DEF.speed; h.vy = dy / d * HERO_DEF.speed; h.x += h.vx * dt; h.y += h.vy * dt; }
+    else { h.vx = 0; h.vy = 0; }
+    h.anim += Math.hypot(h.vx, h.vy) * dt * 0.16;
+    h.frame = (h.anim | 0) % FRAMES;
+    if (Math.hypot(h.vx, h.vy) > 2) {
+      let a = Math.atan2(h.vx, h.vy); if (a < 0) a += TAU;
+      h.dir = Math.round(a / TAU * DIRS) % DIRS;
+    }
+    // auto-attack: nearest living creep in range, on cooldown
+    if (h.cd > 0) h.cd -= dt;
+    else {
+      let tgt = null, bd = HERO_STATS.range * HERO_STATS.range;
+      for (const c of G.creeps) {
+        if (c.dead) continue;
+        const dd = dist2(h.x, h.y, c.x, c.y - c.z);
+        if (dd < bd) { bd = dd; tgt = c; }
+      }
+      if (tgt) {
+        h.cd = HERO_STATS.atkRate;
+        const wasAlive = !tgt.dead;
+        damage(tgt, heroDmg(h), 'piercing', h.owner, null);
+        if (wasAlive && tgt.dead) {
+          h.kills++;
+          if (h.level < HERO_STATS.maxLevel && h.kills % HERO_STATS.killsPerLevel === 0) {
+            h.level++; h.maxHp = heroMaxHp(h); h.hp = Math.min(h.maxHp, h.hp + HERO_STATS.hpPerLevel);
+          }
+        }
+        ev('heroHit', { x: tgt.x, y: tgt.y - tgt.z, owner: h.owner });
+      }
+    }
+    // contact chip damage from any ground creep standing on the hero --
+    // stands in for a full melee-engagement model (see file-header note)
+    let dmgTaken = 0;
+    for (const c of G.creeps) {
+      if (c.dead || c.air) continue;
+      if (dist2(h.x, h.y, c.x, c.y) < HERO_STATS.contactRadius * HERO_STATS.contactRadius) dmgTaken += HERO_STATS.contactDmg * dt;
+    }
+    if (dmgTaken > 0) {
+      h.hp -= dmgTaken; h.hitFlash = 0.16;
+      if (h.hp <= 0) { h.hp = 0; h.dead = true; h.respawnT = HERO_STATS.respawnSec; ev('heroDown', { x: h.x, y: h.y, owner: h.owner }); }
+    }
+  }
+}
 function simTick() {
   const dt = 1 / TICK_HZ;
   G.tick++;
@@ -2373,6 +2467,7 @@ function simTick() {
   updateCreepAbilities(dt);
   updateTowers(dt);
   updateProjectiles(dt);
+  updateHeroes(dt);
 
   if (G.lives <= 0 && G.phase !== 'over') { G.phase = 'over'; ev('lost'); }
 }
@@ -3164,6 +3259,7 @@ function render(dtReal, alpha) {
   const drawables = [];
   for (const t of G.towers) drawables.push({ y: t.y + 4, kind: 'tower', o: t });
   for (const cr of G.creeps) drawables.push({ y: cr.y + (cr.air ? 200 : 0), kind: 'creep', o: cr });
+  for (const h of G.heroes) if (h && !h.dead) drawables.push({ y: h.y + 4, kind: 'hero', o: h });
   for (const d of R.decor) drawables.push({ y: d.y, kind: 'decor', o: d });
   drawables.sort((a, b) => a.y - b.y);
 
@@ -3174,6 +3270,7 @@ function render(dtReal, alpha) {
   for (const d of drawables) {
     if (d.kind === 'creep') { const cr = d.o; const sc = cr.air ? 0.6 : 1; const lift = cr.air ? clamp(1 - cr.z / 60, 0.28, 1) : 1; shadowEll(x, cr.x + SOX * sc, cr.y + (cr.air ? 10 : 2) + SOY * sc, cr.r * 1.5 * sc, cr.r * 0.72 * sc * lift); }
     else if (d.kind === 'tower') shadowEll(x, d.o.x + SOX, d.o.y + 8 + SOY, 20, 11);
+    else if (d.kind === 'hero') shadowEll(x, d.o.x + SOX, d.o.y + 2 + SOY, HERO_DEF.s * 0.45, HERO_DEF.s * 0.22);
     else if (d.kind === 'decor') drawDecorShadow(x, d.o, SOX, SOY);
   }
   x.restore();
@@ -3181,6 +3278,7 @@ function render(dtReal, alpha) {
   for (const d of drawables) {
     if (d.kind === 'creep') drawCreep(x, d.o);
     else if (d.kind === 'tower') drawTower(x, d.o);
+    else if (d.kind === 'hero') drawHero(x, d.o);
     else drawDecor(x, d.o);
   }
 
@@ -3487,6 +3585,28 @@ function drawCreep(x, c) {
   }
   x.restore();
   if (!c.dead) drawHealthBar(x, c);
+}
+function drawHero(x, h) {
+  const sheet = R.sprites.hero; if (!sheet) return;
+  const img = sheet[h.dir][h.frame];
+  const sx = h.x - HERO_DEF.px / 2, sy = h.y - HERO_DEF.px * 0.62;
+  x.save();
+  x.drawImage(img, sx, sy);
+  if (h.hitFlash > 0) {
+    x.save(); x.globalCompositeOperation = 'lighter'; x.globalAlpha = clamp(h.hitFlash * 4, 0, 0.8);
+    x.drawImage(img, sx, sy); x.restore();
+  }
+  x.restore();
+  const w = 40, hgt = 5;
+  const bx = h.x - w / 2, by = h.y - HERO_DEF.px * 0.56;
+  const f = clamp(h.hp / h.maxHp, 0, 1);
+  x.fillStyle = 'rgba(0,0,0,0.62)'; x.fillRect(bx - 1, by - 1, w + 2, hgt + 2);
+  const g = x.createLinearGradient(bx, by, bx, by + hgt);
+  g.addColorStop(0, '#8ad6ff'); g.addColorStop(1, '#2e6fa0');
+  x.fillStyle = g; x.fillRect(bx, by, w * f, hgt);
+  x.strokeStyle = 'rgba(255,255,255,0.3)'; x.lineWidth = 0.6; x.strokeRect(bx + 0.3, by + 0.3, w - 0.6, hgt - 0.6);
+  x.fillStyle = '#ffe7b0'; x.font = '700 9px system-ui'; x.textAlign = 'center';
+  x.fillText('Lv' + h.level, h.x, by - 4);
 }
 const _tintCache = new Map();
 function tintSprite(img, col) {
@@ -3854,6 +3974,21 @@ function drawHUD(x, W, H) {
     rx -= sw + 6 * S;
   });
 
+  // hero move-mode toggle (item 7) -- reuses the same right-to-left rx
+  // tracker the spell buttons above just finished with, own size (sw).
+  if (G.heroes[NET.me]) {
+    const h = G.heroes[NET.me];
+    const hr = addRect('hero', rx, by + (bh - sw) / 2, sw, sw, () => {
+      UI.spellAim = UI.spellAim === 'hero' ? null : 'hero';
+      UI.buildKind = null; UI.sel = null; UI.abilId = null;
+      Audio2.play('ui');
+    });
+    panel(x, hr.x, hr.y, hr.w, hr.h, { hi: UI.spellAim === 'hero', gold: true, r: 7 });
+    txt(x, 'K', hr.x + hr.w / 2, hr.y + hr.h / 2 - 3 * S, 17 * S, '#ffd76a', 'center', 800);
+    txt(x, h.dead ? Math.ceil(h.respawnT) + 's' : 'Lv' + h.level, hr.x + hr.w / 2, hr.y + hr.h - 8 * S, 8 * S, '#c9d6e0', 'center', 700, 'system-ui');
+    rx -= sw + 6 * S;
+  }
+
   /* ---- toasts ---- */
   UI.toasts.forEach((t, i) => {
     t.life -= 1 / 60;
@@ -3932,10 +4067,16 @@ function drawHUDPortrait(x, W, H, M) {
     btn(x, r, def.key, String(def.cost), UI.buildKind === k, G.gold[NET.me] < def.cost, spr && spr.base);
   });
 
-  // action row — wave call on the left, the two spells on the right
+  // action row — wave call on the left, hero + the two spells on the right.
+  // All three right-side buttons share one square size (M.actH, already
+  // >= TOUCH_MIN); adding the hero button just shifts sp1x/sp0x's neighbor
+  // one slot further left and shrinks the wave-call button's width to match,
+  // same generalized-N-button approach used for the info panel's up/sell/
+  // mode/ability row elsewhere in this file -- not a hand-tuned one-off.
   const sw = M.actH;
-  const sp0x = W - pad - sw, sp1x = sp0x - gap - sw;
-  const startR = addRect('start', pad, actY, sp1x - gap - pad, sw, () => cmdStartWave());
+  const hasHero = !!G.heroes[NET.me];
+  const sp0x = W - pad - sw, sp1x = sp0x - gap - sw, heroX = sp1x - gap - sw;
+  const startR = addRect('start', pad, actY, (hasHero ? heroX : sp1x) - gap - pad, sw, () => cmdStartWave());
   panel(x, startR.x, startR.y, startR.w, startR.h, { gold: G.phase === 'prep', hi: G.phase === 'prep', r: 7 });
   txt(x, G.phase === 'prep' ? 'DALGAYI ÇAĞIR' : 'SAVAŞ SÜRÜYOR', startR.x + startR.w / 2, startR.y + startR.h / 2 - 7,
     11.5, G.phase === 'prep' ? '#ffe08a' : '#8a8578', 'center', 800);
@@ -3952,6 +4093,18 @@ function drawHUDPortrait(x, W, H, M) {
       txt(x, Math.ceil(G.spell[i].cd / TICK_HZ) + 's', r.x + r.w / 2, r.y + r.h / 2, 14, '#cfd6e0', 'center', 800); x.restore();
     }
   });
+
+  if (hasHero) {
+    const h = G.heroes[NET.me];
+    const hr = addRect('hero', heroX, actY, sw, sw, () => {
+      UI.spellAim = UI.spellAim === 'hero' ? null : 'hero';
+      UI.buildKind = null; UI.sel = null; UI.abilId = null;
+      Audio2.play('ui');
+    });
+    panel(x, hr.x, hr.y, hr.w, hr.h, { hi: UI.spellAim === 'hero', gold: true, r: 7 });
+    txt(x, 'K', hr.x + hr.w / 2, hr.y + hr.h / 2 - 4, 16, '#ffd76a', 'center', 800);
+    txt(x, h.dead ? Math.ceil(h.respawnT) + 's' : 'Lv' + h.level, hr.x + hr.w / 2, hr.y + hr.h - 8, 8, '#c9d6e0', 'center', 700, 'system-ui');
+  }
 
   /* ---- toasts ---- */
   UI.toasts.forEach((t, i) => {
@@ -4223,6 +4376,7 @@ function resetRun(seed) {
   if (NET.active) G.gold[1] += Math.round(metaBonus(NET.guestMeta || EMPTY_META, 'gold'));
   G.score = [0, 0]; G.leaked = 0; G.killed = 0;
   G.creeps = []; G.towers = []; G.projs = []; G.nextId = 1;
+  G.heroes = [spawnHero(0), NET.active ? spawnHero(1) : null];
   G.spell[0].cd = 0; G.spell[1].cd = 0;
   G.speed = 1;
   EVQ.length = 0;
@@ -4265,6 +4419,9 @@ function applyCmd(c, who) {
     if (!res.ok && who === NET.me) { UI.toast(res.why, '#ff9a8a'); Audio2.play('deny'); }
   } else if (c.k === 'spell') {
     if (castSpell(c.i, c.x, c.y, who)) { if (c.i === 1) ev('blizzard', {}); }
+  } else if (c.k === 'heroMove') {
+    // who IS the hero index (each player only ever commands their own hero)
+    const h = G.heroes[who]; if (h) { h.tx = c.x; h.ty = c.y; }
   } else if (c.k === 'speed') {
     G.speed = clamp(c.v | 0, 1, 3);
   } else if (c.k === 'start') {
@@ -4368,6 +4525,11 @@ function bindInput(cv) {
     const gx = (w[0] / TILE) | 0, gy = (w[1] / TILE) | 0;
     if (UI.spellAim === 0) { issue({ k: 'spell', i: 0, x: w[0], y: w[1] }); UI.spellAim = null; return; }
     if (UI.spellAim === 'abil') { issue({ k: 'ability', id: UI.abilId, x: w[0], y: w[1] }); UI.spellAim = null; UI.abilId = null; return; }
+    // Hero move mode is deliberately PERSISTENT (unlike the one-shot spell/
+    // ability aim above): a player will click-to-move their hero repeatedly
+    // through a wave, so re-arming the HUD button after every single click
+    // would be tedious. Stays armed until the button is pressed again or Esc.
+    if (UI.spellAim === 'hero') { issue({ k: 'heroMove', x: w[0], y: w[1] }); return; }
     const t = inGrid(gx, gy) ? findTower(gx, gy) : null;
     // Selecting an existing tower wins over building. Build mode stays armed
     // after a placement so several towers can go down in a row, but that used
@@ -4431,6 +4593,8 @@ function processEvents(list) {
       case 'poisonTick': FX.poisonTick(e.x, e.y); break;
       case 'chain': FX.chain(e.from, e.hits); break;
       case 'suppress': FX.suppress(e.x, e.y, e.tx, e.ty); break;
+      case 'heroHit': FX.hit(e.x, e.y, 0); break;
+      case 'heroDown': UI.toast('Kahraman düştü! Yakında dirilecek', '#ff9a8a'); break;
       case 'healTick': FX.healTick(e.x, e.y); break;
       case 'smite': FX.smite(e.x, e.y, e.r); break;
       case 'abilFx': FX.ring(e.ax, e.ay, 4, 46, e.kind === 'storm' ? '160,220,255' : '255,200,120', 0.5, 3); break;
@@ -4482,7 +4646,17 @@ function snapshot() {
   for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest, Math.round(t.acd * 20) / 20, t.branch == null ? -1 : t.branch]);
   const pr = [];
   for (const p of G.projs) pr.push([['arrow', 'shell', 'shard', 'blob'].indexOf(p.kind), Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.ang * 100) / 100]);
-  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ms: G.mapSeed, ev: EVQ.slice() };
+  // Heroes (item 7) get their own top-level field rather than a slot appended
+  // to tw/cr -- they aren't towers or creeps and have no natural id to key
+  // off of in either array. hr[owner] is null (no hero, e.g. solo's slot 1)
+  // or a fixed-order array; same positional-append rule as tw/cr going
+  // forward. Only CURRENT position is sent (not h.tx/h.ty, the host's own
+  // movement-destination field) -- the guest lerps toward this stream of
+  // positions exactly like it already does for creeps (see applySnapshot
+  // and the guest branch of loop()), it never needs to know the host's
+  // click-target to render correctly.
+  const hr = G.heroes.map(h => h ? [Math.round(h.x), Math.round(h.y), Math.round(h.hp), Math.round(h.maxHp), h.level, h.dead ? 1 : 0, Math.round(h.respawnT * 10) / 10, h.dir, h.frame] : null);
+  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, hr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ms: G.mapSeed, ev: EVQ.slice() };
   if (NET.gridDirty) { s.g = Array.from(G.grid); NET.gridDirty = false; }
   return s;
 }
@@ -4528,6 +4702,23 @@ function applySnapshot(s) {
   });
   if (UI.sel) UI.sel = G.towers.find(t => t.id === UI.sel.id) || null;
   G.projs = s.pr.map(a => ({ kind: ['arrow', 'shell', 'shard', 'blob'][a[0]], x: a[1], y: a[2], z: a[3], ang: a[4] }));
+  if (s.hr) {
+    G.heroes = s.hr.map((a, i) => {
+      if (!a) return null;
+      const prev = G.heroes[i];
+      const h = prev || spawnHero(i);
+      // On the guest, h.tx/h.ty means something DIFFERENT than on the host:
+      // the host's updateHeroes() (which never runs here -- simTick is
+      // host-only, see the loop() branch) reads tx/ty as "walk toward this
+      // point". The guest never runs that code, so it's safe to reuse the
+      // same fields here purely as the lerp target, matching exactly how
+      // c.tx/c.ty already works for creeps a few lines up.
+      h.tx = a[0]; h.ty = a[1];
+      if (!prev) { h.x = a[0]; h.y = a[1]; }
+      h.hp = a[2]; h.maxHp = a[3]; h.level = a[4]; h.dead = !!a[5]; h.respawnT = a[6]; h.dir = a[7]; h.frame = a[8];
+      return h;
+    });
+  }
   processEvents(s.ev || []);
 }
 const ICE = { iceServers: [
@@ -4657,6 +4848,11 @@ function loop(ts) {
       c.x = lerp(c.x, c.tx, 0.35); c.y = lerp(c.y, c.ty, 0.35);
       if (c.hitFlash > 0) c.hitFlash -= dt;
     }
+    for (const h of G.heroes) {
+      if (!h) continue;
+      h.x = lerp(h.x, h.tx, 0.35); h.y = lerp(h.y, h.ty, 0.35);
+      if (h.hitFlash > 0) h.hitFlash -= dt;
+    }
     if (G.prepTimer > 0) G.prepTimer -= dt * TICK_HZ;
   }
   FX.update(dt);
@@ -4674,6 +4870,10 @@ function bootstrap() {
   generateMap(G.mapSeed);
   const jobs = [];
   for (const k in CREEPS) jobs.push({ label: CREEPS[k].name, fn: () => { R.sprites.units[k] = bakeUnit(CREEPS[k]); } });
+  // hero (item 7) is NOT part of CREEPS -- it isn't an enemy, and CIDX
+  // (Object.keys(CREEPS)) is the wire-order contract for enemy types, so
+  // it gets its own sprite slot instead of polluting that index space.
+  jobs.push({ label: HERO_DEF.name, fn: () => { R.sprites.hero = bakeUnit(HERO_DEF); } });
   for (const k in TOWERS) for (let l = 0; l < 3; l++) jobs.push({ label: TOWERS[k].names[l], fn: () => { R.sprites.towers[k + l] = bakeTower(k, l); } });
   // branch sprites (Phase 2, item 2): reuse lv2 geometry (see bakeTower), so
   // this is 10 more bakes of the SAME per-tower cost as the lv2 job above,
