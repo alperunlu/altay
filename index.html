@@ -2571,10 +2571,26 @@ const HERO_DEF = {
   kind: 'humanoid', weapon: 'sword', armorPlate: true, shoulder: true, eye: '#ffe7b0',
   pal: { body: [92, 68, 46], limb: [72, 54, 38], armor: [188, 154, 92], accent: [255, 224, 142], horn: [230, 220, 200] }
 };
+/* Hero progression used to be a flat 4 kills per level to a cap of 8 -- 28
+   kills total, which a hero parked on the lane reaches during WAVE 3. The
+   remaining 29 waves had no progression at all, and a flat +6 damage per
+   level left the hero doing 138 DPS against creeps with thousands of HP, so
+   it was decorative from roughly wave 10 on.
+   Levelling now runs on XP weighted by what was killed (a creep's bounty is
+   already the game's own measure of its worth), so early trash barely moves
+   the bar and late-game kills move it a lot -- the curve stretches across
+   the whole run on its own instead of needing a hand-tuned per-wave table.
+   Damage scales multiplicatively so a maxed hero stays worth positioning,
+   and contact damage scales with the wave so parking it in a late-game
+   crowd is a real risk rather than a free damage aura. */
 const HERO_STATS = {
-  hp: 420, dmg: 34, range: 70, atkRate: 0.55, contactDmg: 6, contactRadius: 30,
-  killsPerLevel: 4, maxLevel: 8, hpPerLevel: 45, dmgPerLevel: 6, respawnSec: 18
+  hp: 420, dmg: 42, range: 70, atkRate: 0.55, contactDmg: 6, contactRadius: 30,
+  maxLevel: 10, hpPerLevel: 52, dmgPerLevel: 0.34, atkRatePerLevel: 0.012,
+  contactPerWave: 0.09, respawnSec: 18
 };
+// XP to go from `lv` to `lv+1`. Cumulative to level 10 is ~5,800, against the
+// ~52,000 total bounty a full run puts on the board.
+function heroXpFor(lv) { return Math.round(16 * Math.pow(lv, 1.8)); }
 function heroSpawnPoint(owner) {
   // the gate the heroes defend -- same tile the creeps are marching toward
   return { x: G.exit.gx * TILE + TILE / 2, y: (G.exit.gy + (owner === 0 ? -1 : 1)) * TILE + TILE / 2 };
@@ -2583,11 +2599,33 @@ function spawnHero(owner) {
   const p = heroSpawnPoint(owner);
   return {
     owner, x: p.x, y: p.y, tx: p.x, ty: p.y, vx: 0, vy: 0, dir: 4, frame: 0, anim: 0,
-    hp: HERO_STATS.hp, maxHp: HERO_STATS.hp, level: 1, kills: 0, cd: 0, dead: false, respawnT: 0, hitFlash: 0
+    hp: HERO_STATS.hp, maxHp: HERO_STATS.hp, level: 1, kills: 0, xp: 0, cd: 0, dead: false, respawnT: 0, hitFlash: 0
   };
 }
-function heroDmg(h) { return HERO_STATS.dmg + (h.level - 1) * HERO_STATS.dmgPerLevel; }
+/* How full the hero's XP bar is, 0..1. A guest never runs updateHeroes (the
+   sim is host-only) so it has no h.xp to read; the host ships the fraction in
+   the hero snapshot instead and applySnapshot parks it on h.xpFrac. */
+function heroXpFrac(h) {
+  if (h.level >= HERO_STATS.maxLevel) return 1;
+  if (NET.active && !NET.isHost) return h.xpFrac || 0;
+  return clamp(h.xp / heroXpFor(h.level), 0, 1);
+}
+function heroDmg(h) { return HERO_STATS.dmg * (1 + (h.level - 1) * HERO_STATS.dmgPerLevel); }
 function heroMaxHp(h) { return HERO_STATS.hp + (h.level - 1) * HERO_STATS.hpPerLevel; }
+function heroAtkRate(h) { return Math.max(0.26, HERO_STATS.atkRate - (h.level - 1) * HERO_STATS.atkRatePerLevel); }
+/* Award XP for a kill and roll any levels it earned. Returns true if the hero
+   levelled, so the caller can fire the feedback event. */
+function heroGainXp(h, amount) {
+  if (h.level >= HERO_STATS.maxLevel) return false;
+  h.xp += amount;
+  let up = false;
+  while (h.level < HERO_STATS.maxLevel && h.xp >= heroXpFor(h.level)) {
+    h.xp -= heroXpFor(h.level); h.level++; up = true;
+  }
+  if (up) { h.maxHp = heroMaxHp(h); h.hp = Math.min(h.maxHp, h.hp + HERO_STATS.hpPerLevel); }
+  if (h.level >= HERO_STATS.maxLevel) h.xp = 0;
+  return up;
+}
 function updateHeroes(dt) {
   for (const h of G.heroes) {
     if (!h) continue;
@@ -2620,24 +2658,32 @@ function updateHeroes(dt) {
         if (dd < bd) { bd = dd; tgt = c; }
       }
       if (tgt) {
-        h.cd = HERO_STATS.atkRate;
+        h.cd = heroAtkRate(h);
         const wasAlive = !tgt.dead;
-        damage(tgt, heroDmg(h), 'piercing', h.owner, null);
-        if (wasAlive && tgt.dead) {
-          h.kills++;
-          if (h.level < HERO_STATS.maxLevel && h.kills % HERO_STATS.killsPerLevel === 0) {
-            h.level++; h.maxHp = heroMaxHp(h); h.hp = Math.min(h.maxHp, h.hp + HERO_STATS.hpPerLevel);
-          }
+        const maxHp = tgt.maxHp || 1, worth = tgt.bounty || 1;
+        const dealt = damage(tgt, heroDmg(h), 'piercing', h.owner, null);
+        if (wasAlive && tgt.dead) h.kills++;
+        /* XP is awarded per point of damage dealt, as a share of what the
+           creep is worth -- NOT on the killing blow. Late-game creeps have
+           thousands of HP and the towers almost always land the last hit, so
+           kill-credit XP stalled the hero at level 6 of 10 for the back half
+           of the run no matter how well it was played. Chipping a titan now
+           pays out in proportion to the chipping. */
+        if (heroGainXp(h, worth * Math.min(1, dealt / maxHp))) {
+          ev('heroLevel', { x: h.x, y: h.y, owner: h.owner, lv: h.level });
         }
         ev('heroHit', { x: tgt.x, y: tgt.y - tgt.z, owner: h.owner });
       }
     }
     // contact chip damage from any ground creep standing on the hero --
-    // stands in for a full melee-engagement model (see file-header note)
+    // stands in for a full melee-engagement model (see file-header note).
+    // Scaled by wave: a flat rate meant a levelled hero could be parked in a
+    // late-game crowd indefinitely, which turned positioning into a non-choice.
+    const contact = HERO_STATS.contactDmg * (1 + G.waveIdx * HERO_STATS.contactPerWave);
     let dmgTaken = 0;
     for (const c of G.creeps) {
       if (c.dead || c.air) continue;
-      if (dist2(h.x, h.y, c.x, c.y) < HERO_STATS.contactRadius * HERO_STATS.contactRadius) dmgTaken += HERO_STATS.contactDmg * dt;
+      if (dist2(h.x, h.y, c.x, c.y) < HERO_STATS.contactRadius * HERO_STATS.contactRadius) dmgTaken += contact * dt;
     }
     if (dmgTaken > 0) {
       h.hp -= dmgTaken; h.hitFlash = 0.16;
@@ -4230,7 +4276,8 @@ function drawHUD(x, W, H) {
     });
     panel(x, hr.x, hr.y, hr.w, hr.h, { hi: UI.spellAim === 'hero', gold: true, r: 7 });
     txt(x, 'K', hr.x + hr.w / 2, hr.y + hr.h / 2 - 3 * S, 17 * S, '#ffd76a', 'center', 800);
-    txt(x, h.dead ? Math.ceil(h.respawnT) + 's' : 'Lv' + h.level, hr.x + hr.w / 2, hr.y + hr.h - 8 * S, 8 * S, '#c9d6e0', 'center', 700, 'system-ui');
+    txt(x, h.dead ? Math.ceil(h.respawnT) + 's' : 'Lv' + h.level, hr.x + hr.w / 2, hr.y + hr.h - 12 * S, 8 * S, '#c9d6e0', 'center', 700, 'system-ui');
+    heroXpBar(x, hr.x + 7 * S, hr.y + hr.h - 7 * S, hr.w - 14 * S, 2.6 * S, h);
     rx -= sw + 6 * S;
   }
 
@@ -4348,7 +4395,8 @@ function drawHUDPortrait(x, W, H, M) {
     });
     panel(x, hr.x, hr.y, hr.w, hr.h, { hi: UI.spellAim === 'hero', gold: true, r: 7 });
     txt(x, 'K', hr.x + hr.w / 2, hr.y + hr.h / 2 - 4, 16, '#ffd76a', 'center', 800);
-    txt(x, h.dead ? Math.ceil(h.respawnT) + 's' : 'Lv' + h.level, hr.x + hr.w / 2, hr.y + hr.h - 8, 8, '#c9d6e0', 'center', 700, 'system-ui');
+    txt(x, h.dead ? Math.ceil(h.respawnT) + 's' : 'Lv' + h.level, hr.x + hr.w / 2, hr.y + hr.h - 12, 8, '#c9d6e0', 'center', 700, 'system-ui');
+    heroXpBar(x, hr.x + 7, hr.y + hr.h - 7, hr.w - 14, 2.6, h);
   }
 
   /* ---- toasts ---- */
@@ -4365,6 +4413,18 @@ function drawHUDPortrait(x, W, H, M) {
 
 /* portrait info row: three text lines, or two lines + a 44px action bar
    when a tower is selected. Line pitch is fixed so nothing collides. */
+/* Thin XP readout under the hero button. Without it levelling is invisible
+   between the one-off level toast and the Lv number changing, so the player
+   has no sense of how close the next level is. Goes solid gold at max. */
+function heroXpBar(x, bx, by, bw, bh, h) {
+  if (h.dead) return;
+  const f = heroXpFrac(h), maxed = h.level >= HERO_STATS.maxLevel;
+  x.fillStyle = 'rgba(8,10,14,0.70)';
+  roundRect(x, bx, by, bw, bh, bh / 2); x.fill();
+  if (f <= 0) return;
+  x.fillStyle = maxed ? 'rgba(255,214,106,0.95)' : 'rgba(150,220,255,0.92)';
+  roundRect(x, bx, by, Math.max(bh, bw * f), bh, bh / 2); x.fill();
+}
 function drawInfoPanelPortrait(x, px, py, w, h) {
   panel(x, px, py, w, h, { r: 7 });
   const t = UI.sel;
@@ -4902,6 +4962,10 @@ function processEvents(list) {
       case 'suppress': FX.suppress(e.x, e.y, e.tx, e.ty); break;
       case 'heroHit': FX.hit(e.x, e.y, 0); break;
       case 'heroDown': UI.toast('Kahraman düştü! Yakında dirilecek', '#ff9a8a'); break;
+      case 'heroLevel':
+        FX.ring(e.x, e.y, 4, 40, '255,220,140', 0.6, 3);
+        if (e.owner === NET.me) UI.toast(`Kahraman seviye ${e.lv}`, '#ffd76a');
+        break;
       case 'healTick': FX.healTick(e.x, e.y); break;
       case 'smite': FX.smite(e.x, e.y, e.r); break;
       case 'abilFx': FX.ring(e.ax, e.ay, 4, 46, e.kind === 'storm' ? '160,220,255' : '255,200,120', 0.5, 3); break;
@@ -4962,7 +5026,9 @@ function snapshot() {
   // positions exactly like it already does for creeps (see applySnapshot
   // and the guest branch of loop()), it never needs to know the host's
   // click-target to render correctly.
-  const hr = G.heroes.map(h => h ? [Math.round(h.x), Math.round(h.y), Math.round(h.hp), Math.round(h.maxHp), h.level, h.dead ? 1 : 0, Math.round(h.respawnT * 10) / 10, h.dir, h.frame] : null);
+  // slot 9 (xp fraction) is APPENDED, never inserted -- the hero snapshot is
+  // positional like every other array on the wire (see the KIDX/CIDX note).
+  const hr = G.heroes.map(h => h ? [Math.round(h.x), Math.round(h.y), Math.round(h.hp), Math.round(h.maxHp), h.level, h.dead ? 1 : 0, Math.round(h.respawnT * 10) / 10, h.dir, h.frame, Math.round(heroXpFrac(h) * 100)] : null);
   const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, hr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ms: G.mapSeed, ev: EVQ.slice() };
   if (NET.gridDirty) { s.g = Array.from(G.grid); NET.gridDirty = false; }
   return s;
@@ -5023,6 +5089,7 @@ function applySnapshot(s) {
       h.tx = a[0]; h.ty = a[1];
       if (!prev) { h.x = a[0]; h.y = a[1]; }
       h.hp = a[2]; h.maxHp = a[3]; h.level = a[4]; h.dead = !!a[5]; h.respawnT = a[6]; h.dir = a[7]; h.frame = a[8];
+      h.xpFrac = (a[9] || 0) / 100;  // appended slot; older hosts simply omit it
       return h;
     });
   }
