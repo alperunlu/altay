@@ -491,6 +491,126 @@ function lightPass(cv, sun = 0.34, bounce = 0.18, tint = null) {
    TERRAIN BAKE
    ============================================================ */
 const Terrain = { cv: null, ready: false };
+
+/* The tower-free route from spawn to gate, in world pixels. Walked off the
+   flow field G.dist, which generateMap() has already computed by the time
+   bakeTerrain() runs. This is the lane the map is built around, so it is what
+   gets a baked road; once the player mazes, the LIVE route diverges from it
+   and drawPathHint()'s animated chevrons are what track that. */
+function baseRoute() {
+  const pts = [];
+  let gx = G.spawn.gx, gy = G.spawn.gy, guard = 0;
+  while (guard++ < GW * GH) {
+    pts.push([gx * TILE + TILE / 2, gy * TILE + TILE / 2]);
+    if (gx === G.exit.gx && gy === G.exit.gy) break;
+    let bd = G.dist[idxOf(gx, gy)], bx = -1, by = -1;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = gx + dx, ny = gy + dy; if (!inGrid(nx, ny)) continue;
+      if (dx && dy) { if (!passable(idxOf(gx + dx, gy)) || !passable(idxOf(gx, gy + dy))) continue; }
+      const ni = idxOf(nx, ny); if (!passable(ni)) continue;
+      if (G.dist[ni] < bd) { bd = G.dist[ni]; bx = nx; by = ny; }
+    }
+    if (bx < 0) break;
+    gx = bx; gy = by;
+  }
+  return pts;
+}
+
+/* Worn dirt road along `pts`. The edge is deliberately NOT a stroke: a clean
+   wide stroke reads as a painted stripe, so the body is laid down as a dense
+   run of overlapping jittered ellipses whose radii wander along the length.
+   That gives a ragged, hand-worn silhouette for a fraction of the cost of a
+   per-pixel erosion pass over the full 1760x800 terrain canvas. */
+function paintRoad(x, pts) {
+  if (!pts || pts.length < 2) return;
+  // resample the tile-centre polyline to a smooth, slightly wandering spine
+  const spine = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+    const steps = Math.max(2, Math.ceil(Math.hypot(bx - ax, by - ay) / 5));
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps, px = lerp(ax, bx, t), py = lerp(ay, by, t);
+      const wob = fbm(px / 55 + 11, py / 55 - 7, 3) * 7;   // meander off the grid line
+      spine.push([px, py + wob]);
+    }
+  }
+  spine.push(pts[pts.length - 1]);
+  const normalAt = i => {
+    const a = spine[Math.max(0, i - 1)], b = spine[Math.min(spine.length - 1, i + 1)];
+    const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.hypot(dx, dy) || 1;
+    return [-dy / d, dx / d];
+  };
+  const widthAt = i => {
+    const [px, py] = spine[i];
+    return 15 + (fbm(px / 90 - 3, py / 90 + 5, 3) * 0.5 + 0.5) * 7;  // half-width, 15..22
+  };
+
+  x.save();
+  // 1. settled shadow under the roadbed -- the track sits slightly sunken
+  x.globalAlpha = 0.30; x.fillStyle = 'rgba(26,20,12,1)';
+  for (let i = 0; i < spine.length; i++) {
+    const [px, py] = spine[i], w = widthAt(i) + 5;
+    x.beginPath(); x.ellipse(px, py + 2, w, w * 0.82, 0, 0, TAU); x.fill();
+  }
+  // 2. dirt body, ragged edges from jittered overlapping stamps
+  x.globalAlpha = 1;
+  for (let i = 0; i < spine.length; i++) {
+    const [px, py] = spine[i], [nx, ny] = normalAt(i), w = widthAt(i);
+    const t = (fbm(px / 34 + 2, py / 34 - 9, 3) * 0.5 + 0.5);
+    const col = mixHex([104, 80, 50], [158, 130, 88], t);
+    x.fillStyle = `rgb(${col[0] | 0},${col[1] | 0},${col[2] | 0})`;
+    x.beginPath(); x.ellipse(px, py, w, w * 0.8, 0, 0, TAU); x.fill();
+    // edge crumbs: a few small stamps hanging off either side break the outline
+    for (let k = 0; k < 2; k++) {
+      const side = k ? 1 : -1, off = w * (0.72 + ART() * 0.5);
+      const r = 2.5 + ART() * 5.5;
+      x.beginPath(); x.ellipse(px + nx * off * side, py + ny * off * side, r, r * 0.8, 0, 0, TAU); x.fill();
+    }
+  }
+  // 3. sun-bleached dust down the centre
+  x.globalAlpha = 0.34; x.fillStyle = 'rgb(186,160,114)';
+  for (let i = 0; i < spine.length; i++) {
+    const [px, py] = spine[i], w = widthAt(i) * (0.30 + (fbm(px / 40, py / 40, 2) * 0.5 + 0.5) * 0.30);
+    x.beginPath(); x.ellipse(px, py, w, w * 0.75, 0, 0, TAU); x.fill();
+  }
+  // 4. cart ruts -- two darker grooves tracking the spine, each with a pale lip
+  x.globalAlpha = 1;
+  for (const side of [-1, 1]) {
+    for (let i = 1; i < spine.length; i++) {
+      const [px, py] = spine[i], [nx, ny] = normalAt(i), w = widthAt(i);
+      if ((fbm(px / 26 + side * 13, py / 26, 2) * 0.5 + 0.5) < 0.34) continue;  // ruts fade in and out
+      const off = w * 0.42 * side;
+      const rx = px + nx * off, ry = py + ny * off;
+      x.fillStyle = 'rgba(206,184,140,0.20)';
+      x.beginPath(); x.ellipse(rx - nx * 2, ry - ny * 2, 2.6, 2.1, 0, 0, TAU); x.fill();
+      x.fillStyle = 'rgba(58,42,26,0.34)';
+      x.beginPath(); x.ellipse(rx, ry, 2.2, 1.8, 0, 0, TAU); x.fill();
+    }
+  }
+  // 5. gravel and hoof-scuffed pebbles scattered over the surface
+  for (let i = 0; i < spine.length * 2; i++) {
+    const j = (ART() * spine.length) | 0, [px, py] = spine[j], [nx, ny] = normalAt(j);
+    const off = (ART() - 0.5) * 2 * widthAt(j) * 0.9;
+    const gx2 = px + nx * off, gy2 = py + ny * off, r = 0.6 + ART() * 1.9;
+    x.fillStyle = `rgba(${150 + ART() * 60 | 0},${134 + ART() * 50 | 0},${104 + ART() * 40 | 0},${0.28 + ART() * 0.4})`;
+    x.beginPath(); x.ellipse(gx2, gy2, r, r * 0.7, ART() * 3, 0, TAU); x.fill();
+    x.fillStyle = 'rgba(0,0,0,0.20)';
+    x.beginPath(); x.ellipse(gx2 + 0.7, gy2 + 0.9, r * 0.85, r * 0.45, 0, 0, TAU); x.fill();
+  }
+  // 6. grass overhanging the verge, so the road is grown-into rather than cut out
+  x.lineWidth = 1; x.lineCap = 'round';
+  for (let i = 0; i < spine.length * 3; i++) {
+    const j = (ART() * spine.length) | 0, [px, py] = spine[j], [nx, ny] = normalAt(j);
+    const side = ART() < 0.5 ? -1 : 1, off = widthAt(j) * (0.80 + ART() * 0.38) * side;
+    const bx2 = px + nx * off, by2 = py + ny * off;
+    const h = 3 + ART() * 6, lean = (ART() - 0.5) * 4;
+    x.strokeStyle = `rgba(${104 + ART() * 60 | 0},${136 + ART() * 56 | 0},${54 + ART() * 40 | 0},${0.30 + ART() * 0.4})`;
+    x.beginPath(); x.moveTo(bx2, by2); x.quadraticCurveTo(bx2 + lean * 0.5, by2 - h * 0.6, bx2 + lean, by2 - h); x.stroke();
+  }
+  x.restore();
+}
+
 function bakeTerrain(grid) {
   const { c, x } = makeCanvas(WORLD_W, WORLD_H);
   const img = x.createImageData(WORLD_W, WORLD_H);
@@ -580,13 +700,12 @@ function bakeTerrain(grid) {
     x.fillStyle = `rgba(${col},${0.35 + ART() * 0.45})`;
     x.beginPath(); x.arc(px, py, 0.8 + ART() * 1.2, 0, TAU); x.fill();
   }
-  // ley line: faint worn track spawn -> gate (readability aid)
-  x.save(); x.globalAlpha = 0.30;
-  const lg = x.createLinearGradient(0, WORLD_H / 2, WORLD_W, WORLD_H / 2);
-  lg.addColorStop(0, 'rgba(196,168,110,0.55)'); lg.addColorStop(0.5, 'rgba(180,158,104,0.18)'); lg.addColorStop(1, 'rgba(196,168,110,0.55)');
-  x.strokeStyle = lg; x.lineWidth = 26; x.lineCap = 'round';
-  x.beginPath(); x.moveTo(0, WORLD_H / 2); x.bezierCurveTo(WORLD_W * 0.3, WORLD_H * 0.36, WORLD_W * 0.7, WORLD_H * 0.64, WORLD_W, WORLD_H / 2); x.stroke();
-  x.restore();
+  // The road. This used to be a single decorative bezier across the middle at
+  // 30% alpha that had nothing to do with where creeps actually walk, which
+  // left the whole playfield reading as undifferentiated grass -- the player
+  // could not see the lane they were defending. It now follows the real
+  // tower-free flow route (see baseRoute) and is painted as worn dirt.
+  paintRoad(x, baseRoute());
 
   // ---- cliffs: one merged organic rock mass, never a grid of squares ----
   // Everything below is driven off TWO union masks (rock face + plateau top) built
@@ -1274,10 +1393,21 @@ function drawWeapon(x, def, hx, hy, fx, fy, s, ph) {
    inside drawTowerBase, see BRANCH_TRIM) plus a translucent lightPass wash
    (BRANCH_TINT) on top, cheap enough that boot time barely moves (measured:
    see the boot-time note in the verification pass). */
+/* Towers are drawn one-to-one into a 40px tile, but the geometry below was
+   authored at ~51px wide (turrets up to 56px), so neighbouring towers spilled
+   6-8px into each other on every side and a packed killbox read as one
+   unbroken mass of masonry instead of individual buildings you could pick
+   out and click. Scaling the whole bake about its anchor fits the footprint
+   back inside the tile without rewriting every tower's geometry; the outline
+   and rim-light passes still run at full canvas resolution afterwards, so a
+   shrunk tower keeps a proportionally crisper silhouette rather than a
+   muddier one. TOWER_PIVOT is scaled to match so turrets stay seated. */
+const TOWER_FIT = 0.80;
 function bakeTower(kind, lvl, branch) {
   const S = 96;
   const base = makeCanvas(S, S), turret = makeCanvas(S, S);
   base.x.translate(S / 2, S * 0.66); turret.x.translate(S / 2, S / 2);
+  base.x.scale(TOWER_FIT, TOWER_FIT); turret.x.scale(TOWER_FIT, TOWER_FIT);
   const gl = branch != null ? 2 : lvl;
   const tint = branch != null ? BRANCH_TINT[kind][branch] : null;
   drawTowerBase(base.x, kind, gl, branch);
@@ -1289,7 +1419,7 @@ function bakeTower(kind, lvl, branch) {
   rimLight(turret.c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.64 + gl * 0.06);
   lightPass(turret.c, 0.14, 0.10, tint);
   // same saturation/contrast punch-up as unit sprites for silhouette readability
-  return { base: boostContrast(base.c), turret: boostContrast(turret.c), S, pivot: TOWER_PIVOT(gl) };
+  return { base: boostContrast(base.c), turret: boostContrast(turret.c), S, pivot: TOWER_PIVOT(gl) * TOWER_FIT };
 }
 function TOWER_PIVOT(lvl) { return 34 + lvl * 9; }
 /* tapered masonry wall in 3/4 view */
@@ -2159,9 +2289,16 @@ function waveSummaryText(w) {
   for (let i = 1; i < w.groups.length; i++) s += ` + ${CREEPS[w.groups[i].type].name} ×${w.groups[i].count}`;
   return s;
 }
+/* Callers append the word "zırh", so this must return the qualifier ONLY --
+   returning 'karışık zırh' printed "karışık zırh zırh", which every wave now
+   hits since mixed compositions are the norm rather than the exception.
+   Naming the actual armor classes is also more use to the player than the
+   word "karışık": it is what tells them which damage types to bring. */
 function waveArmorText(w) {
-  const uniq = new Set(w.groups.map(g => CREEPS[g.type].armor));
-  return uniq.size > 1 ? 'karışık zırh' : ARMOR[CREEPS[w.groups[0].type].armor];
+  const uniq = [...new Set(w.groups.map(g => CREEPS[g.type].armor))].sort((a, b) => a - b);
+  if (uniq.length === 1) return ARMOR[uniq[0]];
+  if (uniq.length === 2) return `${ARMOR[uniq[0]]}+${ARMOR[uniq[1]]}`;
+  return 'karışık';
 }
 function waveTotalRemaining(w) {
   if (G.phase !== 'wave') return 0;
@@ -3632,6 +3769,15 @@ function drawTower(x, t) {
   const build = t.buildT > 0 ? t.buildT / (TICK_HZ * 0.5) : 0;
   x.save();
   if (build > 0) { x.globalAlpha = 1 - build * 0.6; x.translate(t.x, t.y); x.scale(1, 1 - build * 0.25); x.translate(-t.x, -t.y); }
+  /* Contact shadow. Towers sit shoulder to shoulder in a killbox, and even
+     fitted to the tile their silhouettes touch; giving each one its own
+     grounded pool of shade is what separates them into countable buildings
+     rather than a masonry wall. Drawn before the body so it never darkens it. */
+  const csh = x.createRadialGradient(t.x, t.y + 5, 2, t.x, t.y + 5, 19);
+  csh.addColorStop(0, 'rgba(10,8,6,0.42)'); csh.addColorStop(0.65, 'rgba(10,8,6,0.22)');
+  csh.addColorStop(1, 'rgba(10,8,6,0)');
+  x.fillStyle = csh;
+  x.beginPath(); x.ellipse(t.x, t.y + 5, 19, 10, 0, 0, TAU); x.fill();
   x.drawImage(spr.base, bx, by);
   const rec = Math.max(0, t.recoil) * 4;
   x.save();
