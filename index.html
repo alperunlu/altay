@@ -189,7 +189,13 @@ const TILE = 40, GW = 44, GH = 20;
    the pair opens near, but still a little above, the solo economy. */
 const SOLO_START_GOLD = 340, COOP_START_GOLD = 200;
 /* rows held clear of rock so the maze has a northern and a southern detour */
-const LANE_ROWS = [2, 16];
+/* Rows kept permanently rock-free so the maze can detour around the middle
+   corridor. Deliberately NOT the outermost rows: a lane hugging the map
+   border can only be covered from one side, which measured as a 3x swing in
+   map difficulty (a route forced onto row 2 lost at wave 9 where the same
+   board won at 32). Three rows of buildable ground outside each lane keeps
+   both sides coverable. */
+const LANE_ROWS = [4, 15];
 const WORLD_W = TILE * GW, WORLD_H = TILE * GH;
 const TICK_HZ = 30, TICK_MS = 1000 / TICK_HZ;
 const DIRS = 8, FRAMES = 4;
@@ -615,7 +621,10 @@ function bakeTerrain(grid) {
   const { c, x } = makeCanvas(WORLD_W, WORLD_H);
   const img = x.createImageData(WORLD_W, WORLD_H);
   const D = img.data;
-  const GRASS_D = [30, 54, 28], GRASS_L = [124, 158, 68], DRY = [146, 132, 70], MOSS = [44, 88, 44];
+  // per-map terrain palette (see MAPS) -- the dark steppe of Kara Geçit and the
+  // dry gold of Bozkır Yolu are what make them read as different places rather
+  // than the same field with the rocks shuffled
+  const [GRASS_D, GRASS_L, DRY, MOSS] = mapBySeed(G.mapSeed).pal;
   const BUMP_E = 4; // finite-difference step for the fake normal-map pass
   for (let py = 0; py < WORLD_H; py++) {
     for (let px = 0; px < WORLD_W; px++) {
@@ -2127,13 +2136,57 @@ const DIFFICULTY = {
    layout), these five just happen to produce visibly distinct rock/corridor
    arrangements. 20260803 is the original single hardcoded map this game
    shipped with, kept first so existing behavior stays the default pick. */
+/* The five maps used to be one generator run with five different seeds, which
+   produced five statistically indistinguishable layouts (644-671 free tiles,
+   path length 434-461 on every one) -- "new map" that felt like the same map.
+   Each now carries its own generation rules AND its own terrain palette, so
+   they differ in how they PLAY (how much room to maze, how many routes, how
+   forced the chokepoints are) and in how they READ at a glance.
+     blobs/rw/rh  number and size of the scattered rock formations
+     holes        chance a tile inside a formation is skipped (higher = airier)
+     lanes        rows kept permanently rock-free, so the maze can detour
+     massif       one large rock mass across the centre, forcing side routes
+     ridges       rows walled off except for a couple of gaps -> parallel lanes
+     pal          terrain colours: [grassDark, grassLight, dry, moss] */
 const MAPS = [
-  { id: 'classic', name: 'Ötüken Ovası', seed: 20260803 },
-  { id: 'm2', name: 'Kara Geçit', seed: 7 },
-  { id: 'm3', name: 'Taş Vadi', seed: 1453 },
-  { id: 'm4', name: 'Gök Boğazı', seed: 999 },
-  { id: 'm5', name: 'Bozkır Yolu', seed: 42 }
+  {
+    id: 'classic', name: 'Ötüken Ovası', seed: 20260803,
+    gen: { blobs: 8, rw: 2.4, rh: 2.0, holes: 0.18, lanes: [4, 15] },
+    pal: [[30, 54, 28], [124, 158, 68], [146, 132, 70], [44, 88, 44]]
+  },
+  {
+    // narrow and mean: a central massif plus heavy rock, so there is little
+    // room to maze and the two detour lanes carry most of the traffic
+    id: 'm2', name: 'Kara Geçit', seed: 7,
+    gen: { blobs: 6, rw: 2.2, rh: 1.8, holes: 0.34, lanes: [4, 15], massif: true },
+    pal: [[24, 38, 32], [84, 108, 72], [102, 98, 74], [32, 60, 48]]
+  },
+  {
+    // a rubble field: many tiny formations, lots of short walls to build around
+    id: 'm3', name: 'Taş Vadi', seed: 1453,
+    gen: { blobs: 20, rw: 1.2, rh: 1.1, holes: 0.32, lanes: [4, 15] },
+    pal: [[40, 48, 38], [122, 132, 96], [156, 148, 114], [58, 74, 54]]
+  },
+  {
+    // two walled ridges cut the valley into three parallel corridors
+    id: 'm4', name: 'Gök Boğazı', seed: 999,
+    gen: { blobs: 4, rw: 2.0, rh: 1.6, holes: 0.36, lanes: [4, 15], ridges: [7, 13] },
+    pal: [[26, 44, 52], [102, 146, 140], [130, 146, 142], [38, 80, 80]]
+  },
+  {
+    // wide open dry steppe: almost no rock, so the whole board is yours to
+    // maze with and the run is decided by how well you lay it out
+    id: 'm5', name: 'Bozkır Yolu', seed: 42,
+    gen: { blobs: 7, rw: 2.0, rh: 1.4, holes: 0.26, lanes: [4, 9, 15] },
+    pal: [[52, 50, 26], [168, 164, 86], [184, 158, 86], [72, 84, 44]]
+  }
 ];
+/* Resolved from the seed rather than a map id because the seed is what
+   crosses the wire (snapshot's `ms`). generateMap retries at seed+1 when a
+   layout comes out unreachable, so the config is looked up ONCE by the
+   caller and threaded through the retry instead of being re-derived from a
+   seed that no longer matches any map. */
+function mapBySeed(seed) { return MAPS.find(m => m.seed === seed) || MAPS[0]; }
 
 /* ============================================================
    META-PROGRESSION (item 4) -- persists across runs via localStorage.
@@ -2330,7 +2383,8 @@ function idxOf(gx, gy) { return gy * GW + gx; }
 function inGrid(gx, gy) { return gx >= 0 && gy >= 0 && gx < GW && gy < GH; }
 
 /* ---------- map generation ---------- */
-function generateMap(seed) {
+function generateMap(seed, cfg) {
+  cfg = cfg || mapBySeed(seed).gen;
   const R = mulberry32(seed);
   const g = new Uint8Array(GW * GH);
   // cliff border
@@ -2339,22 +2393,50 @@ function generateMap(seed) {
   // spawn/exit corridors (walkable, unbuildable)
   const my = GH >> 1;
   for (let y = my - 1; y <= my + 1; y++) { g[idxOf(0, y)] = 3; g[idxOf(1, y)] = 3; g[idxOf(GW - 1, y)] = 3; g[idxOf(GW - 2, y)] = 3; }
-  // interior rock formations (obstacles that shape mazes)
-  const blobs = 8;
-  // rows kept permanently rock-free as north/south detour lanes (see below)
-  for (let b = 0; b < blobs; b++) {
-    const cx = 5 + (R() * (GW - 12)) | 0, cy = 3 + (R() * (GH - 7)) | 0;
-    const rw = 1 + (R() * 2.4) | 0, rh = 1 + (R() * 2.0) | 0;
-    for (let y = cy - rh; y <= cy + rh; y++) for (let x = cx - rw; x <= cx + rw; x++) {
-      if (!inGrid(x, y)) continue;
-      if (Math.abs(y - my) <= 1 && (x < 4 || x > GW - 5)) continue;
-      const d = Math.hypot((x - cx) / (rw + 0.6), (y - cy) / (rh + 0.6));
-      if (d < 1 && R() > 0.18) g[idxOf(x, y)] = 2;
+  // never wall off the mouth of either corridor
+  const nearMouth = (x, y) => Math.abs(y - my) <= 1 && (x < 4 || x > GW - 5);
+  // walled ridges: rows sealed except for a couple of gaps, which is what
+  // splits a map into parallel corridors instead of one open field
+  for (const ry of cfg.ridges || []) {
+    // Two gaps, each wide enough to build around. A single pass per ridge
+    // reads better for a map called "the gorge", but measured far worse:
+    // with one gap almost every tower near the route would seal the only
+    // way through, so canPlace refused them and the defence stalled at ten
+    // towers. Narrow gaps have the same problem in miniature.
+    const gapN = cfg.gapN || 2, gapW = cfg.gapW || 3, gaps = [];
+    for (let k = 0; k < gapN; k++) gaps.push(6 + (R() * (GW - 16)) | 0);
+    for (let x = 2; x < GW - 2; x++) {
+      if (gaps.some(gp => x >= gp && x < gp + gapW)) continue;
+      // wander the ridge a row up or down as it runs, so it reads as geology
+      // rather than a fence drawn along a grid line
+      const y = ry + (R() < 0.30 ? (R() < 0.5 ? -1 : 1) : 0);
+      if (!inGrid(x, y) || nearMouth(x, y)) continue;
+      g[idxOf(x, y)] = 2;
+      if (R() < 0.35 && inGrid(x, ry)) g[idxOf(x, ry)] = 2;  // thicken here and there
     }
   }
-  // open detour lanes: keep two full-width rows clear of rock so the maze can
-  // route north or south of the middle corridor instead of only straight across
-  for (const ly of LANE_ROWS) for (let x = 1; x < GW - 1; x++) {
+  // central massif: one large mass the lane has to go around
+  if (cfg.massif) {
+    const cx = GW >> 1, cy = my, rw = 4, rh = 2;
+    for (let y = cy - rh; y <= cy + rh; y++) for (let x = cx - rw; x <= cx + rw; x++) {
+      if (!inGrid(x, y) || nearMouth(x, y)) continue;
+      const d = Math.hypot((x - cx) / (rw + 0.6), (y - cy) / (rh + 0.6));
+      if (d < 1 && R() > 0.08) g[idxOf(x, y)] = 2;
+    }
+  }
+  // interior rock formations (obstacles that shape mazes)
+  for (let b = 0; b < cfg.blobs; b++) {
+    const cx = 5 + (R() * (GW - 12)) | 0, cy = 3 + (R() * (GH - 7)) | 0;
+    const rw = 1 + (R() * cfg.rw) | 0, rh = 1 + (R() * cfg.rh) | 0;
+    for (let y = cy - rh; y <= cy + rh; y++) for (let x = cx - rw; x <= cx + rw; x++) {
+      if (!inGrid(x, y) || nearMouth(x, y)) continue;
+      const d = Math.hypot((x - cx) / (rw + 0.6), (y - cy) / (rh + 0.6));
+      if (d < 1 && R() > cfg.holes) g[idxOf(x, y)] = 2;
+    }
+  }
+  // open detour lanes: rows kept clear of rock so the maze can route around
+  // the middle corridor instead of only straight across
+  for (const ly of (cfg.lanes || LANE_ROWS)) for (let x = 1; x < GW - 1; x++) {
     const i = idxOf(x, ly); if (g[i] === 2) g[i] = 0;
   }
   G.grid = g;
@@ -2365,7 +2447,9 @@ function generateMap(seed) {
   // discard the node and silently kill the flood fill along every diagonal.
   G.dist = new Float64Array(GW * GH);
   computeFlow();
-  if (!G.flowOK) return generateMap(seed + 1);
+  // retry with a nudged seed but the SAME config, so a retry never silently
+  // downgrades a map to another map's (or the default's) generation rules
+  if (!G.flowOK) return generateMap(seed + 1, cfg);
   return g;
 }
 
