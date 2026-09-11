@@ -1892,52 +1892,52 @@ const BRANCH_TINT = {
 /* ---------- creep archetypes ---------- */
 const CREEPS = {
   kobold: {
-    name: 'Kobold', armor: 1, air: false, speed: 46, px: 68, s: 34, leg: 0.30, head: 0.15,
+    name: 'Kobold', hpMul: 0.55, armor: 1, air: false, speed: 46, px: 68, s: 34, leg: 0.30, head: 0.15,
     kind: 'humanoid', weapon: 'spear', fangs: true, ears: true, snout: true, eye: '#ffe07a',
     pal: { body: [140, 104, 62], limb: [112, 82, 50], armor: [150, 140, 120], accent: [220, 190, 120], horn: [230, 220, 200] }
   },
   ghoul: {
-    name: 'Gulyabani', armor: 2, air: false, speed: 54, px: 74, s: 36, leg: 0.30, head: 0.155,
+    name: 'Gulyabani', hpMul: 0.75, armor: 2, air: false, speed: 54, px: 74, s: 36, leg: 0.30, head: 0.155,
     kind: 'humanoid', weapon: 'claw', fangs: true, ears: true, eye: '#c8ff7a', hair: true,
     pal: { body: [128, 148, 112], limb: [104, 122, 92], armor: [120, 120, 110], accent: [190, 220, 140], horn: [220, 220, 200] }
   },
   grunt: {
-    name: 'Orduğ Savaşçısı', armor: 3, air: false, speed: 42, px: 80, s: 42, leg: 0.30, head: 0.16,
+    name: 'Orduğ Savaşçısı', hpMul: 1.0, armor: 3, air: false, speed: 42, px: 80, s: 42, leg: 0.30, head: 0.16,
     kind: 'humanoid', weapon: 'axe', armorPlate: true, shoulder: true, helmet: true, fangs: true, eye: '#ff9a5a',
     pal: { body: [96, 132, 84], limb: [80, 112, 70], armor: [126, 100, 66], accent: [230, 180, 90], horn: [220, 210, 190] }
   },
   harpy: {
-    name: 'Alkarısı', armor: 1, air: true, speed: 62, px: 92, s: 36, leg: 0.22, head: 0.145,
+    name: 'Alkarısı', hpMul: 0.7, armor: 1, air: true, speed: 62, px: 92, s: 36, leg: 0.22, head: 0.145,
     kind: 'flyer', wingType: 'feather', weapon: 'claw', eye: '#ffd0f0',
     pal: { body: [150, 106, 158], limb: [124, 88, 132], wing: [186, 148, 196], armor: [160, 140, 170], accent: [240, 190, 240], horn: [230, 210, 230] }
   },
   gargoyle: {
-    name: 'Taş Yalman', armor: 3, air: true, speed: 44, px: 100, s: 42, leg: 0.24, head: 0.16,
+    name: 'Taş Yalman', hpMul: 1.05, armor: 3, air: true, speed: 44, px: 100, s: 42, leg: 0.24, head: 0.16,
     kind: 'flyer', wingType: 'bat', weapon: 'claw', horns: true, ears: true, snout: true, eye: '#ff7040',
     pal: { body: [116, 118, 126], limb: [96, 98, 108], wing: [88, 90, 102], armor: [140, 142, 150], accent: [190, 200, 210], horn: [200, 202, 212] }
   },
   ogre: {
-    name: 'Tepegöz', armor: 4, air: false, speed: 36, px: 100, s: 56, leg: 0.28, head: 0.17, big: true,
+    name: 'Tepegöz', hpMul: 1.9, armor: 4, air: false, speed: 36, px: 100, s: 56, leg: 0.28, head: 0.17, big: true,
     kind: 'humanoid', weapon: 'club', shoulder: true, fangs: true, horns: true, eye: '#ffe08a',
     pal: { body: [156, 128, 92], limb: [132, 106, 76], armor: [110, 88, 62], accent: [220, 180, 120], horn: [232, 224, 200] }
   },
   wraith: {
-    name: 'Kara Yel', armor: 0, air: true, speed: 66, px: 84, s: 40, leg: 0.2, head: 0.15,
+    name: 'Kara Yel', hpMul: 0.85, armor: 0, air: true, speed: 66, px: 84, s: 40, leg: 0.2, head: 0.15,
     kind: 'wraith', weapon: 'scythe', cape: true, eye: '#7ef2ff', tint: 'rgba(80,190,220,0.18)',
     pal: { body: [56, 66, 92], limb: [70, 84, 112], armor: [90, 110, 140], accent: [140, 230, 250], horn: [200, 240, 250] }
   },
   khan: {
-    name: 'Erlik Kağan', armor: 4, air: false, speed: 34, px: 126, s: 72, leg: 0.28, head: 0.16, big: true, boss: true,
+    name: 'Erlik Kağan', hpMul: 8, armor: 4, air: false, speed: 34, px: 126, s: 72, leg: 0.28, head: 0.16, big: true, boss: true,
     kind: 'humanoid', weapon: 'blade', armorPlate: true, shoulder: true, helmet: true, horns: true, cape: true, eye: '#ff4d3a',
     pal: { body: [92, 46, 52], limb: [74, 38, 44], armor: [88, 74, 96], accent: [255, 120, 80], horn: [60, 54, 66] }
   },
   wyrm: {
-    name: 'Gök Ejder', armor: 3, air: true, speed: 50, px: 146, s: 74, leg: 0.24, head: 0.16, big: true, boss: true,
+    name: 'Gök Ejder', hpMul: 9, armor: 3, air: true, speed: 50, px: 146, s: 74, leg: 0.24, head: 0.16, big: true, boss: true,
     kind: 'flyer', wingType: 'bat', weapon: 'claw', horns: true, snout: true, eye: '#ffe14a',
     pal: { body: [150, 84, 52], limb: [124, 68, 44], wing: [178, 104, 58], armor: [200, 150, 80], accent: [255, 200, 110], horn: [240, 226, 190] }
   },
   titan: {
-    name: 'Ötüken Devi', armor: 4, air: false, speed: 30, px: 144, s: 84, leg: 0.28, head: 0.155, big: true, boss: true,
+    name: 'Ötüken Devi', hpMul: 11, armor: 4, air: false, speed: 30, px: 144, s: 84, leg: 0.28, head: 0.155, big: true, boss: true,
     kind: 'humanoid', weapon: 'club', shoulder: true, armorPlate: true, horns: true, eye: '#8affd0',
     pal: { body: [78, 96, 92], limb: [64, 80, 78], armor: [122, 132, 128], accent: [140, 255, 208], horn: [210, 226, 220] }
   },
@@ -1949,15 +1949,15 @@ const CREEPS = {
   basci: {
     // ranged suppressor: a steppe shaman who curses a nearby tower silent
     // rather than dealing HP damage (towers have no HP -- see updateTowers).
-    name: 'Kara Bakşı', armor: 1, air: false, speed: 38, px: 78, s: 40, leg: 0.28, head: 0.16,
+    name: 'Kara Bakşı', hpMul: 0.8, armor: 1, air: false, speed: 38, px: 78, s: 40, leg: 0.28, head: 0.16,
     kind: 'humanoid', weapon: 'spear', cape: true, horns: false, ears: false, eye: '#c79bff',
     pal: { body: [70, 46, 90], limb: [56, 38, 74], armor: [96, 70, 120], accent: [200, 150, 255], horn: [220, 200, 240] },
-    abil: { ranged: { range: 170, stun: 3.0, cd: 4.5 } }
+    abil: { ranged: { range: 170, stun: 1.6, cd: 6.0 } }
   },
   umay: {
     // healer: named for Umay, the Turkic protector-goddess of mothers and the
     // newborn -- keeps nearby wounded allies patched up on a cooldown.
-    name: 'Umay Ana', armor: 1, air: false, speed: 40, px: 76, s: 38, leg: 0.28, head: 0.17,
+    name: 'Umay Ana', hpMul: 0.9, armor: 1, air: false, speed: 40, px: 76, s: 38, leg: 0.28, head: 0.17,
     kind: 'humanoid', cape: true, hair: true, eye: '#ffe9a0',
     pal: { body: [196, 170, 110], limb: [172, 146, 92], armor: [220, 200, 150], accent: [255, 236, 180], horn: [240, 230, 200] },
     abil: { heal: { range: 110, amount: 16, cd: 2.5 } }
@@ -1965,14 +1965,14 @@ const CREEPS = {
   yelbegen: {
     // splitter: the many-headed Yelbegen of the steppe epics -- cut one head
     // down and lesser heads scatter from the corpse (see killCreep).
-    name: 'Yelbegen', armor: 3, air: false, speed: 30, px: 118, s: 64, leg: 0.28, head: 0.155, big: true,
+    name: 'Yelbegen', hpMul: 2.2, armor: 3, air: false, speed: 30, px: 118, s: 64, leg: 0.28, head: 0.155, big: true,
     kind: 'humanoid', weapon: 'club', shoulder: true, horns: true, fangs: true, eye: '#ff6a3a',
     pal: { body: [90, 62, 46], limb: [74, 50, 38], armor: [110, 80, 56], accent: [255, 140, 70], horn: [60, 44, 40] },
     abil: { split: { count: 2, into: 'yelbegenYavru', hpFrac: 0.45, bountyFrac: 0.45 } }
   },
   yelbegenYavru: {
     // Yelbegen's severed head, still snapping -- the splitter's child type.
-    name: 'Yelbegen Yavrusu', armor: 1, air: false, speed: 52, px: 62, s: 32, leg: 0.30, head: 0.19,
+    name: 'Yelbegen Yavrusu', hpMul: 0.5, armor: 1, air: false, speed: 52, px: 62, s: 32, leg: 0.30, head: 0.19,
     kind: 'humanoid', weapon: 'claw', fangs: true, horns: true, eye: '#ff6a3a',
     pal: { body: [98, 68, 50], limb: [80, 54, 42], armor: [116, 84, 58], accent: [255, 150, 80], horn: [64, 46, 42] }
   }
@@ -1984,9 +1984,13 @@ const CREEPS = {
    Groups spawn in order, each after the previous group's own gap-spaced
    spawns finish plus that group's own `delay` (see startWave/simTick). */
 const DIFFICULTY = {
-  easy:   { hp: 0.78, bounty: 1.20, lives: 24 },
+  /* The spread is deliberately narrow. Wave HP is now sized off the economy
+     (see buildWaves), so a multiplier here compounds against an already
+     steep curve -- the old 0.78/1.30 spread turned into "easy never loses a
+     life until wave 24" and "hard is over by wave 11" once that landed. */
+  easy:   { hp: 0.86, bounty: 1.15, lives: 22 },
   normal: { hp: 1,    bounty: 1,    lives: 20 },
-  hard:   { hp: 1.30, bounty: 0.85, lives: 16 }
+  hard:   { hp: 1.06, bounty: 0.90, lives: 18 }
 };
 /* Hand-picked seeds for generateMap(), named as lobby-facing map choices.
    Any integer seed works (generateMap retries seed+1 on an unreachable
@@ -2046,43 +2050,104 @@ function awardMetaCurrency(won) {
   META.currency += gained; saveMeta();
   return gained;
 }
+/* Wave composition. Every entry is a list of [type,count] groups that spawn
+   one after another. Design rules the table follows:
+     - each of the 13 spawnable archetypes appears, and each is INTRODUCED in
+       a wave built around it before it shows up as filler later;
+     - almost every wave mixes at least two roles (tank+chaff, ground+air,
+       support+bruiser) so one tower type is never the whole answer;
+     - bosses at 10 / 20 / 30 arrive with an escort, and 31-32 are a real
+       finale -- 32 fields all three bosses at once. */
+const WAVE_ORDER = [
+  /*  1 */[['kobold', 12]],
+  /*  2 */[['kobold', 16]],
+  /*  3 */[['ghoul', 12], ['kobold', 6]],
+  /*  4 */[['harpy', 8], ['kobold', 8]],              // air debut, with ground so
+  //        a ground-only opening board isn't instantly punished
+  /*  5 */[['grunt', 10], ['kobold', 8]],
+  /*  6 */[['ghoul', 18], ['harpy', 6]],
+  /*  7 */[['gargoyle', 10], ['ghoul', 8]],           // armored air debut
+  /*  8 */[['kobold', 24], ['ghoul', 10]],
+  /*  9 */[['grunt', 14], ['harpy', 10]],
+  /* 10 */[['khan', 1], ['kobold', 10], ['ghoul', 6]],   // BOSS
+  /* 11 */[['basci', 3], ['ghoul', 16]],              // suppressor debut
+  /* 12 */[['harpy', 16], ['grunt', 8]],
+  /* 13 */[['ogre', 8], ['kobold', 12]],              // tank debut
+  /* 14 */[['gargoyle', 12], ['wraith', 5], ['kobold', 10]],  // fast unarmored air debut
+  /* 15 */[['grunt', 20], ['basci', 5]],
+  /* 16 */[['wraith', 14], ['harpy', 10]],
+  /* 17 */[['ogre', 11], ['umay', 4]],                // healer debut
+  /* 18 */[['harpy', 20], ['gargoyle', 6], ['grunt', 8]],
+  /* 19 */[['yelbegen', 4], ['grunt', 12]],           // splitter debut
+  /* 20 */[['wyrm', 1], ['gargoyle', 8], ['harpy', 8]],  // BOSS
+  /* 21 */[['wraith', 18], ['basci', 6]],
+  /* 22 */[['grunt', 26], ['umay', 5]],
+  /* 23 */[['ogre', 15], ['yelbegen', 4]],
+  /* 24 */[['wraith', 20], ['gargoyle', 8], ['grunt', 10]],
+  /* 25 */[['gargoyle', 22], ['basci', 8], ['ghoul', 10]],
+  /* 26 */[['ogre', 19], ['umay', 6]],
+  /* 27 */[['wraith', 26], ['yelbegen', 5]],
+  /* 28 */[['grunt', 34], ['basci', 8], ['umay', 5]],
+  /* 29 */[['ogre', 24], ['yelbegen', 6]],
+  /* 30 */[['titan', 1], ['grunt', 14], ['ogre', 4]],    // BOSS
+  /* 31 */[['yelbegen', 8], ['umay', 6], ['basci', 6], ['ogre', 12]],
+  /* 32 */[['khan', 1], ['wyrm', 1], ['titan', 1], ['grunt', 20]]  // FINALE
+];
+
+/* How hard wave i is *relative to the gold the player has banked by then*.
+   The old curve grew HP as 1.19^i while the economy grew far slower, which
+   is why the first 24 waves cost zero lives and waves 25-27 then wiped the
+   board. Sizing each wave off the cumulative economy instead keeps pressure
+   under control by construction: tower DPS tracks gold, so HP/gold IS the
+   difficulty. The ramp below is the only difficulty dial in the curve. */
+function wavePressure(i) { return 2.35 + 2.1 * Math.pow(i / (WAVE_ORDER.length - 1), 1.15); }
+
+/* Raw cumulative gold overstates late-game player power: a board saturates.
+   Towers cap at level 3 + one branch and the map has finite room, so past a
+   certain bank the next thousand gold buys nothing and DPS goes flat while
+   raw econ keeps climbing. Sizing waves off raw econ therefore reproduces
+   exactly the cliff this rewrite exists to remove. This bends the curve to
+   the same shape the player's actual board follows -- near-linear while
+   there is still somewhere to spend, flattening as the board fills out. */
+const ECON_SATURATION = 46000;
+function usableEcon(gold) { return ECON_SATURATION * (1 - Math.exp(-gold / ECON_SATURATION)); }
+
 function buildWaves(difficulty) {
   const scale = DIFFICULTY[difficulty] || DIFFICULTY.normal;
-  const order = [
-    ['kobold', 12], ['kobold', 16], ['ghoul', 12], ['harpy', 10], ['grunt', 10],
-    ['ghoul', 18], ['gargoyle', 10], ['kobold', 26], ['grunt', 14], ['khan', 1],
-    ['ghoul', 22], ['harpy', 16], ['ogre', 8], ['gargoyle', 14], ['grunt', 20],
-    ['wraith', 14], ['ogre', 11], ['harpy', 22], ['gargoyle', 18], ['wyrm', 1],
-    ['wraith', 18], ['grunt', 26], ['ogre', 15], ['wraith', 22], ['gargoyle', 24],
-    ['ogre', 19], ['wraith', 26], ['grunt', 34], ['ogre', 24], ['titan', 1],
-    /* Phase 1 test waves -- appended past the original 30 so every existing
-       wave's number/composition/balance is untouched. Not a curve rebalance:
-       just enough to make the three new abilities reachable in play.
-       Wave 31 mixes the ranged suppressor in with a tanky escort so there are
-       towers nearby worth silencing; wave 32 pairs the healer with the
-       splitter so a damaged Yelbegen actually gets topped up before it dies
-       and throws its brood. */
-    [['basci', 8], ['grunt', 12]],
-    [['umay', 6], ['yelbegen', 7]]
-  ];
-  return order.map((o, i) => {
-    const raw = Array.isArray(o[0]) ? o : [o]; // normalize [type,count] to a 1-group list
-    const n = i + 1;
-    const groups = raw.map(([type, count], gi) => {
-      const t = CREEPS[type];
-      const boss = !!t.boss;
-      let hp = boss ? Math.round(1000 * Math.pow(1.5, i / 5)) : Math.round(48 * Math.pow(1.19, i) + i * 18);
-      if (boss) hp = Math.round(hp * (1 + i * 0.12));
-      hp = Math.round(hp * scale.hp);
-      const bounty = Math.round((boss ? 320 + i * 34 : Math.max(6, Math.round(7 + i * 1.9))) * scale.bounty);
-      return {
-        type, count, hp, bounty, boss,
-        speed: t.speed * (1 + Math.min(0.30, i * 0.011)),
-        gap: boss ? 60 : Math.max(9, 26 - i * 0.45),
-        delay: gi === 0 ? 0 : 90 // ticks after the previous group empties before this one starts
-      };
+  const hpMulOf = type => CREEPS[type].hpMul || 1;
+  /* Pass 1: bounty depends only on the wave index and composition, never on
+     HP, so the whole economy is known before a single HP number is chosen.
+     It is deliberately computed at NEUTRAL bounty (not scale.bounty) so the
+     HP curve is identical on every difficulty -- easy/hard then differ only
+     through scale.hp, scale.bounty and starting lives, instead of easy's
+     extra gold quietly inflating enemy HP back up again. */
+  const plan = WAVE_ORDER.map((raw, i) => {
+    const groups = raw.map(([type, count]) => {
+      const t = CREEPS[type], boss = !!t.boss;
+      const unit = boss ? 320 + i * 34 : Math.max(6, Math.round((7 + i * 1.9) * hpMulOf(type)));
+      return { type, count, boss, unit };
     });
-    return { n, groups, boss: groups.some(g => g.boss), bonus: Math.round((90 + i * 22) * scale.bounty) };
+    const bonus = 90 + i * 22;
+    return { groups, bonus, income: groups.reduce((s, g) => s + g.count * g.unit, 0) + bonus };
+  });
+
+  let econ = SOLO_START_GOLD;
+  return plan.map((pw, i) => {
+    // total HP this wave is allowed to field, given what the player could own
+    const totalHp = wavePressure(i) * usableEcon(econ) * scale.hp;
+    // split it across groups by headcount x archetype toughness, so an ogre in
+    // a mixed wave is genuinely a tank and the kobolds beside it stay chaff
+    const weight = pw.groups.reduce((s, g) => s + g.count * hpMulOf(g.type), 0) || 1;
+    const groups = pw.groups.map((g, gi) => ({
+      type: g.type, count: g.count, boss: g.boss,
+      hp: Math.max(1, Math.round(totalHp * hpMulOf(g.type) / weight)),
+      bounty: Math.round(g.unit * scale.bounty),
+      speed: CREEPS[g.type].speed * (1 + Math.min(0.30, i * 0.011)),
+      gap: g.boss ? 60 : Math.max(9, 26 - i * 0.45),
+      delay: gi === 0 ? 0 : 90 // ticks after the previous group empties before this one starts
+    }));
+    econ += pw.income;
+    return { n: i + 1, groups, boss: groups.some(g => g.boss), bonus: Math.round(pw.bonus * scale.bounty) };
   });
 }
 let WAVES = buildWaves('normal');
@@ -3982,12 +4047,15 @@ function drawHUD(x, W, H) {
   // spells + start (right)
   const sw = 52 * S;
   let rx = W - 14 - sw;
-  // the wave button sits left of *all* spell buttons — it used to be offset from
-  // the first one only, so the last spell was drawn on top of its right half and
-  // (rects being hit-tested in insertion order) could never be tapped.
-  const spellsW = SPELLS.length * sw + (SPELLS.length - 1) * 6 * S;
+  // the wave button sits left of *every* button in the right-hand cluster — it
+  // used to be offset from the first spell only, so the last spell was drawn on
+  // top of its right half and (rects being hit-tested in insertion order) could
+  // never be tapped. Count the buttons rather than hardcoding SPELLS.length, so
+  // adding one here (the hero toggle below) can't silently reintroduce that.
+  const rightN = SPELLS.length + (G.heroes[NET.me] ? 1 : 0);
+  const rightW = rightN * sw + (rightN - 1) * 6 * S;
   const startW = 92 * S, startH = Math.max(TOUCH_MIN, 44 * S);
-  const startR = addRect('start', W - 14 - spellsW - 8 * S - startW, by + (bh - startH) / 2, startW, startH, () => cmdStartWave());
+  const startR = addRect('start', W - 14 - rightW - 8 * S - startW, by + (bh - startH) / 2, startW, startH, () => cmdStartWave());
   panel(x, startR.x, startR.y, startR.w, startR.h, { gold: G.phase === 'prep', hi: G.phase === 'prep', r: 7 });
   txt(x, G.phase === 'prep' ? 'DALGAYI ÇAĞIR' : 'SAVAŞ SÜRÜYOR', startR.x + startR.w / 2, startR.y + startR.h / 2 - 6 * S, 10.5 * S, G.phase === 'prep' ? '#ffe08a' : '#8a8578', 'center', 800);
   txt(x, G.phase === 'prep' ? `+${Math.ceil(G.prepTimer / TICK_HZ)}s erken bonus` : `dalga ${WAVES.length}'e kadar`, startR.x + startR.w / 2, startR.y + startR.h / 2 + 10 * S, 8.5 * S, '#a89f8a', 'center', 600, 'system-ui');
