@@ -2132,13 +2132,17 @@ const CREEPS = {
    Groups spawn in order, each after the previous group's own gap-spaced
    spawns finish plus that group's own `delay` (see startWave/simTick). */
 const DIFFICULTY = {
-  /* The spread is deliberately narrow. Wave HP is now sized off the economy
-     (see buildWaves), so a multiplier here compounds against an already
-     steep curve -- the old 0.78/1.30 spread turned into "easy never loses a
-     life until wave 24" and "hard is over by wave 11" once that landed. */
-  easy:   { hp: 0.86, bounty: 1.15, lives: 22 },
+  /* Hard differs from normal by MARGIN, not by enemy HP. Wave HP is sized off
+     the economy (see buildWaves), so an hp multiplier here compounds against
+     an already steep curve: measured, every 6% of hp moved the run by roughly
+     ten waves, which is why the tiers kept landing either identical or
+     unplayable. Same enemies, fewer lives and less income reads clearly to
+     the player ("you can afford twelve mistakes instead of twenty") and
+     scales predictably. Easy still softens hp, since a beginner tier wants
+     the enemies themselves to be weaker, not just the punishment lighter. */
+  easy:   { hp: 0.88, bounty: 1.15, lives: 25 },
   normal: { hp: 1,    bounty: 1,    lives: 20 },
-  hard:   { hp: 1.06, bounty: 0.90, lives: 18 }
+  hard:   { hp: 1,    bounty: 0.92, lives: 12 }
 };
 /* Hand-picked seeds for generateMap(), named as lobby-facing map choices.
    Any integer seed works (generateMap retries seed+1 on an unreachable
@@ -2160,34 +2164,39 @@ const DIFFICULTY = {
 const MAPS = [
   {
     id: 'classic', name: 'Ötüken Ovası', seed: 20260803,
+    tier: 'Acemi', hpMul: 1.00,
     gen: { blobs: 8, rw: 2.4, rh: 2.0, holes: 0.18, lanes: [4, 15] },
     pal: [[30, 54, 28], [124, 158, 68], [146, 132, 70], [44, 88, 44]]
-  },
-  {
-    // narrow and mean: a central massif plus heavy rock, so there is little
-    // room to maze and the two detour lanes carry most of the traffic
-    id: 'm2', name: 'Kara Geçit', seed: 7,
-    gen: { blobs: 6, rw: 2.2, rh: 1.8, holes: 0.34, lanes: [4, 15], massif: true },
-    pal: [[24, 38, 32], [84, 108, 72], [102, 98, 74], [32, 60, 48]]
-  },
-  {
-    // a rubble field: many tiny formations, lots of short walls to build around
-    id: 'm3', name: 'Taş Vadi', seed: 1453,
-    gen: { blobs: 20, rw: 1.2, rh: 1.1, holes: 0.32, lanes: [4, 15] },
-    pal: [[40, 48, 38], [122, 132, 96], [156, 148, 114], [58, 74, 54]]
-  },
-  {
-    // two walled ridges cut the valley into three parallel corridors
-    id: 'm4', name: 'Gök Boğazı', seed: 999,
-    gen: { blobs: 4, rw: 2.0, rh: 1.6, holes: 0.36, lanes: [4, 15], ridges: [7, 13] },
-    pal: [[26, 44, 52], [102, 146, 140], [130, 146, 142], [38, 80, 80]]
   },
   {
     // wide open dry steppe: almost no rock, so the whole board is yours to
     // maze with and the run is decided by how well you lay it out
     id: 'm5', name: 'Bozkır Yolu', seed: 42,
+    tier: 'Acemi', hpMul: 1.00,
     gen: { blobs: 7, rw: 2.0, rh: 1.4, holes: 0.26, lanes: [4, 9, 15] },
     pal: [[52, 50, 26], [168, 164, 86], [184, 158, 86], [72, 84, 44]]
+  },
+  {
+    // narrow and mean: a central massif plus heavy rock, so there is little
+    // room to maze and the two detour lanes carry most of the traffic
+    id: 'm2', name: 'Kara Geçit', seed: 7,
+    tier: 'Çetin', hpMul: 0.90,
+    gen: { blobs: 6, rw: 2.2, rh: 1.8, holes: 0.34, lanes: [4, 15], massif: true },
+    pal: [[24, 38, 32], [84, 108, 72], [102, 98, 74], [32, 60, 48]]
+  },
+  {
+    // two walled ridges cut the valley into three parallel corridors
+    id: 'm4', name: 'Gök Boğazı', seed: 999,
+    tier: 'Zorlu', hpMul: 0.93,
+    gen: { blobs: 4, rw: 2.0, rh: 1.6, holes: 0.36, lanes: [4, 15], ridges: [7, 13] },
+    pal: [[26, 44, 52], [102, 146, 140], [130, 146, 142], [38, 80, 80]]
+  },
+  {
+    // a rubble field: many tiny formations, lots of short walls to build around
+    id: 'm3', name: 'Taş Vadi', seed: 1453,
+    tier: 'Zorlu', hpMul: 0.80,
+    gen: { blobs: 20, rw: 1.2, rh: 1.1, holes: 0.32, lanes: [4, 15] },
+    pal: [[40, 48, 38], [122, 132, 96], [156, 148, 114], [58, 74, 54]]
   }
 ];
 /* Resolved from the seed rather than a map id because the seed is what
@@ -2292,7 +2301,16 @@ const WAVE_ORDER = [
    board. Sizing each wave off the cumulative economy instead keeps pressure
    under control by construction: tower DPS tracks gold, so HP/gold IS the
    difficulty. The ramp below is the only difficulty dial in the curve. */
-function wavePressure(i) { return 2.35 + 2.1 * Math.pow(i / (WAVE_ORDER.length - 1), 1.15); }
+function wavePressure(i) {
+  const t = i / (WAVE_ORDER.length - 1);
+  /* The decaying third term exists because the opening was measurably dead:
+     tracking how far down the path the furthest creep of each wave got before
+     dying, waves 1-5 scored 0.28 / 0.07 / 0.02 / 0.00 / 0.14 -- wave four's
+     enemies were being deleted at the spawn. A player's first five minutes
+     had no contact in them at all. It decays to nothing by wave ~10 so it
+     sharpens the introduction without touching the rest of the curve. */
+  return 3.45 + 2.55 * Math.pow(t, 1.15) + 1.9 * Math.exp(-i / 3);
+}
 
 /* Raw cumulative gold overstates late-game player power: a board saturates.
    Towers cap at level 3 + one branch and the map has finite room, so past a
@@ -2304,8 +2322,12 @@ function wavePressure(i) { return 2.35 + 2.1 * Math.pow(i / (WAVE_ORDER.length -
 const ECON_SATURATION = 46000;
 function usableEcon(gold) { return ECON_SATURATION * (1 - Math.exp(-gold / ECON_SATURATION)); }
 
-function buildWaves(difficulty) {
+function buildWaves(difficulty, mapSeed) {
   const scale = DIFFICULTY[difficulty] || DIFFICULTY.normal;
+  // Seed comes in as an argument rather than being read off G: G is declared
+  // below this function, and buildWaves also runs once at module load, when a
+  // `const G` is still in its temporal dead zone (even `typeof G` throws there).
+  const mapCfg = mapBySeed(mapSeed === undefined ? MAPS[0].seed : mapSeed);
   const hpMulOf = type => CREEPS[type].hpMul || 1;
   /* Pass 1: bounty depends only on the wave index and composition, never on
      HP, so the whole economy is known before a single HP number is chosen.
@@ -2326,7 +2348,14 @@ function buildWaves(difficulty) {
   let econ = SOLO_START_GOLD;
   return plan.map((pw, i) => {
     // total HP this wave is allowed to field, given what the player could own
-    const totalHp = wavePressure(i) * usableEcon(econ) * scale.hp;
+    /* Per-map difficulty. Measured with the strongest known strategy, the
+       five maps were NOT equally hard -- two cleared wave 32 while three
+       died around wave 20-22, because a constrained layout gives a
+       concentrated killbox less of the route to cover. Presenting them as
+       interchangeable dropdown entries made that a trap. hpMul turns the
+       spread into a deliberate ladder instead: every map is clearable, the
+       tighter ones just leave you less margin, and the picker names the tier. */
+    const totalHp = wavePressure(i) * usableEcon(econ) * scale.hp * (mapCfg.hpMul || 1);
     // split it across groups by headcount x archetype toughness, so an ogre in
     // a mixed wave is genuinely a tank and the kobolds beside it stay chaff
     const weight = pw.groups.reduce((s, g) => s + g.count * hpMulOf(g.type), 0) || 1;
@@ -2342,7 +2371,7 @@ function buildWaves(difficulty) {
     return { n: i + 1, groups, boss: groups.some(g => g.boss), bonus: Math.round(pw.bonus * scale.bounty) };
   });
 }
-let WAVES = buildWaves('normal');
+let WAVES = buildWaves('normal', MAPS[0].seed);
 /* Composition-derived text shared by the HUD banner and the next-wave preview
    panel; kept as helpers so a future mixed wave prints sensibly instead of
    requiring every call site to know about `groups`. */
@@ -2505,6 +2534,62 @@ function canPlace(gx, gy) {
   const ok = computeFlow() && groundCreepsHavePath();
   G.grid[i] = saved; computeFlow();
   return ok;
+}
+
+/* Walk the flow field from spawn to gate, in grid coords. */
+function routeTiles() {
+  const pts = [];
+  let gx = G.spawn.gx, gy = G.spawn.gy, guard = 0;
+  while (guard++ < GW * GH) {
+    pts.push([gx, gy]);
+    if (gx === G.exit.gx && gy === G.exit.gy) break;
+    let bd = G.dist[idxOf(gx, gy)], bx = -1, by = -1;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = gx + dx, ny = gy + dy; if (!inGrid(nx, ny)) continue;
+      if (dx && dy) { if (!passable(idxOf(gx + dx, gy)) || !passable(idxOf(gx, gy + dy))) continue; }
+      const ni = idxOf(nx, ny); if (!passable(ni)) continue;
+      if (G.dist[ni] < bd) { bd = G.dist[ni]; bx = nx; by = ny; }
+    }
+    if (bx < 0) break;
+    gx = bx; gy = by;
+  }
+  return pts;
+}
+
+/* What fraction of `route` (grid tiles) sits inside some tower's range. */
+function routeCoverage(route) {
+  if (!route.length) return 0;
+  let covered = 0;
+  for (const [gx, gy] of route) {
+    const wx = gx * TILE + TILE / 2, wy = gy * TILE + TILE / 2;
+    for (const t of G.towers) {
+      const st = towerStat(t);
+      if (dist2(t.x, t.y, wx, wy) <= st.range * st.range) { covered++; break; }
+    }
+  }
+  return covered / route.length;
+}
+
+/* Legality AND consequence for one candidate placement, from a single flow
+   solve. Rerouting is the heart of the maze mechanic, but it can also move
+   the lane clean off an entire defence: measured on Kara Geçit, one tower at
+   wave 22 dropped route coverage from 52% to ZERO -- forty-three towers
+   suddenly guarding nothing, with no warning and no way to see it coming.
+   That is a trap rather than a decision, so the preview now reports where the
+   lane WOULD go and how much of the existing defence it would abandon, and
+   the build overlay draws it. */
+function placementPreview(gx, gy) {
+  const out = { ok: false, route: null, coverBefore: 0, coverAfter: 0 };
+  if (!inGrid(gx, gy)) return out;
+  const i = idxOf(gx, gy);
+  if (G.grid[i] !== 0) return out;
+  out.coverBefore = routeCoverage(routeTiles());
+  const saved = G.grid[i]; G.grid[i] = 1;
+  out.ok = computeFlow() && groundCreepsHavePath();
+  if (out.ok) { out.route = routeTiles(); out.coverAfter = routeCoverage(out.route); }
+  G.grid[i] = saved; computeFlow();
+  return out;
 }
 function groundCreepsHavePath() {
   for (const c of G.creeps) {
@@ -3895,6 +3980,32 @@ function drawBuildOverlay(x) {
   const spr = R.sprites.towers[UI.buildKind + '0'];
   if (spr) { x.globalAlpha = 0.65; x.drawImage(spr.base, gx * TILE + TILE / 2 - spr.S / 2, gy * TILE + TILE / 2 - spr.S * 0.66); x.globalAlpha = 1; }
   x.restore();
+
+  /* Where the lane would go if this tower went down. Rerouting is the point
+     of the maze, but without showing it the player cannot tell a clever wall
+     from one that walks the enemy around their entire defence. Turns amber
+     when the new lane abandons a large share of the towers now covering it. */
+  if (ok && UI.ghostRoute && UI.ghostRoute.length > 1) {
+    const bad = UI.ghostAbandon > 0.34;
+    x.save();
+    x.lineJoin = 'round'; x.lineCap = 'round';
+    x.setLineDash([9, 9]); x.lineDashOffset = -R.time * 34;
+    x.strokeStyle = bad ? 'rgba(255,170,60,0.95)' : 'rgba(150,255,180,0.7)';
+    x.lineWidth = bad ? 3.4 : 2.4;
+    x.beginPath();
+    UI.ghostRoute.forEach((g, i) => {
+      const px = g[0] * TILE + TILE / 2, py = g[1] * TILE + TILE / 2;
+      i ? x.lineTo(px, py) : x.moveTo(px, py);
+    });
+    x.stroke();
+    x.setLineDash([]);
+    if (bad) {
+      const mid = UI.ghostRoute[(UI.ghostRoute.length / 2) | 0];
+      txt(x, `yol kayar · savunmanın %${Math.round(UI.ghostAbandon * 100)} kadarı boşa düşer`,
+        mid[0] * TILE + TILE / 2, mid[1] * TILE - 16, 13, '#ffb648', 'center', 800);
+    }
+    x.restore();
+  }
 }
 function drawDecor(x, d) {
   const spr = decorSprite(d);
@@ -4175,6 +4286,9 @@ function drawBlizzard(x, W, H) {
 const UI = {
   buildKind: null, sel: null, spellAim: null, abilId: null,
   aim: [0, 0], aimW: [0, 0], placeOK: true,
+  // where the lane would go if the hovered tower were built, and how much of
+  // the defence currently covering it that would strand (see placementPreview)
+  ghostRoute: null, ghostAbandon: 0,
   toasts: [], rects: [], scale: 1, panelH: 128, hoverBtn: null,
   hudTop: 1e9, hudBottom: 54,
   toast(msg, col) { this.toasts.push({ msg, col: col || '#ffd9a0', life: 2.4 }); if (this.toasts.length > 4) this.toasts.shift(); }
@@ -4962,7 +5076,18 @@ function bindInput(cv) {
       const gx = (w[0] / TILE) | 0, gy = (w[1] / TILE) | 0, cell = gy * GW + gx;
       if (cell !== UI._cell) {   // pathfinding validity is expensive — only on cell change
         UI._cell = cell;
-        UI.placeOK = inGrid(gx, gy) && G.grid[idxOf(gx, gy)] === 0 && ((!NET.active || NET.isHost) ? canPlace(gx, gy) : true);
+        if (!NET.active || NET.isHost) {
+          // one flow solve gives both legality and the resulting lane (a guest
+          // has no authoritative grid to simulate against, so it assumes legal
+          // and lets the host reject)
+          const pv = placementPreview(gx, gy);
+          UI.placeOK = pv.ok;
+          UI.ghostRoute = pv.route;
+          UI.ghostAbandon = pv.coverBefore > 0.15 ? Math.max(0, pv.coverBefore - pv.coverAfter) / pv.coverBefore : 0;
+        } else {
+          UI.placeOK = inGrid(gx, gy) && G.grid[idxOf(gx, gy)] === 0;
+          UI.ghostRoute = null; UI.ghostAbandon = 0;
+        }
       }
     }
     UI.hoverBtn = null;
@@ -5308,7 +5433,7 @@ function payAll(amount) { for (let i = 0; i < G.players; i++) G.gold[i] += amoun
    needed for correctness. A guest-visible "the host picked Zor" badge would
    need one and is left for later. */
 function applyDifficulty() {
-  WAVES = buildWaves(G.difficulty);
+  WAVES = buildWaves(G.difficulty, G.mapSeed);
   // Lives are a shared co-op resource, so the meta bonus here always comes
   // from META (this machine's own profile) -- applyDifficulty only ever
   // runs on the authoritative side (solo, or the host via resetRun/netHost),
@@ -5631,7 +5756,11 @@ function wireShell() {
   const mapSelect = $('mapSelect');
   MAPS.forEach(m => {
     const opt = document.createElement('option');
-    opt.value = m.seed; opt.textContent = m.name;
+    // Name the tier. Measured with the strongest strategy the maps are NOT
+    // equally hard -- a tight layout gives a concentrated defence less of the
+    // route to cover -- so listing them as interchangeable names made the
+    // picker a trap for a new player.
+    opt.value = m.seed; opt.textContent = m.tier ? `${m.name} — ${m.tier}` : m.name;
     if (m.seed === G.mapSeed) opt.selected = true;
     mapSelect.appendChild(opt);
   });
