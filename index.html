@@ -98,9 +98,9 @@
   <div class="card">
     <h1>ALTAY</h1>
     <div class="kicker">Gök Kapısını Tut</div>
-    <p class="lead">Erlik'in orduları bozkırdan yürüyor. Kulelerinle labirent ör, otuz dalgayı geri püskürt, kapıyı düşürme.</p>
+    <p class="lead">Erlik'in orduları bozkırdan yürüyor. Kulelerinle labirent ör, otuz iki dalgayı geri püskürt, kapıyı düşürme.</p>
     <button class="primary" id="btnSolo">Tek başına oyna</button>
-    <button id="btnHost">Oda kur ve arkadaş çağır</button>
+    <button id="btnHost">Oda kur ve arkadaşlarını çağır</button>
     <button id="btnJoinShow">Odaya katıl</button>
     <div class="row hidden" id="joinRow">
       <input id="codeIn" maxlength="6" placeholder="KOD" autocomplete="off">
@@ -196,6 +196,15 @@ const SOLO_START_GOLD = 340, COOP_START_GOLD = 200;
    board won at 32). Three rows of buildable ground outside each lane keeps
    both sides coverable. */
 const LANE_ROWS = [4, 15];
+
+/* Up to four players. The host is always slot 0 and every guest is handed a
+   slot in 1..3 when it connects; that slot is the owner index for its purse,
+   score, hero and towers, so it is the single thing the whole co-op model
+   hangs off. Star topology: only the host simulates, guests send commands and
+   receive snapshots, which is why adding players is a matter of widening
+   arrays rather than changing how the simulation works. */
+const MAX_PLAYERS = 4;
+const OWNER_COL = ['#4ea9ff', '#ff9a4e', '#8fe08a', '#c79bff'];
 const WORLD_W = TILE * GW, WORLD_H = TILE * GH;
 const TICK_HZ = 30, TICK_MS = 1000 / TICK_HZ;
 const DIRS = 8, FRAMES = 4;
@@ -2223,9 +2232,9 @@ function metaBonus(profile, key) { return metaLevel(profile, key) * META_TREE[ke
    local machine; co-op: the host), since a guest never runs either. A
    guest's profile reaches the host once, right after connecting, via a
    `{t:'meta'}` message (see netJoin/netHost's conn handlers) and is cached
-   as NET.guestMeta; nothing here is re-synced through snapshot() since it
-   is player-local bookkeeping, not simulation state. */
-function metaProfileFor(owner) { return (NET.active && owner === 1) ? (NET.guestMeta || EMPTY_META) : META; }
+   as NET.guestMeta[slot]; nothing here is re-synced through snapshot() since
+   it is player-local bookkeeping, not simulation state. */
+function metaProfileFor(owner) { return (NET.active && owner !== 0) ? (NET.guestMeta[owner] || EMPTY_META) : META; }
 function metaDmgMult(owner) { return 1 + metaBonus(metaProfileFor(owner), 'dmg'); }
 function awardMetaCurrency(won) {
   const diffMult = { easy: 0.8, normal: 1, hard: 1.3 }[G.difficulty] || 1;
@@ -2366,7 +2375,9 @@ function waveTotalRemaining(w) {
 const G = {
   tick: 0, phase: 'prep', // prep | wave | over | won
   lives: 20, waveIdx: 0, spawnLeft: 0, spawnTimer: 0, prepTimer: 30 * TICK_HZ,
-  gold: [SOLO_START_GOLD, SOLO_START_GOLD], score: [0, 0], leaked: 0, killed: 0,
+  // one purse/score slot per seat; only the first `players` of them are live
+  gold: new Array(MAX_PLAYERS).fill(SOLO_START_GOLD), score: new Array(MAX_PLAYERS).fill(0),
+  players: 1, leaked: 0, killed: 0,
   grid: null, towerAt: null, dist: null, flowOK: true,
   creeps: [], towers: [], projs: [], nextId: 1,
   spawn: { gx: 0, gy: GH >> 1 }, exit: { gx: GW - 1, gy: GH >> 1 },
@@ -2376,7 +2387,8 @@ const G = {
   mapSeed: 20260803, // matches MAPS[0] ('classic'); wireShell() runs before
   // bootstrap() sets this again, so it must already be defined here or the
   // lobby's map row would render with no button pre-selected
-  heroes: [null, null] // populated by resetRun(); heroes[1] only in co-op
+  // one per seat; a slot is non-null exactly while that player is connected
+  heroes: new Array(MAX_PLAYERS).fill(null)
 };
 
 function idxOf(gx, gy) { return gy * GW + gx; }
@@ -2675,9 +2687,13 @@ const HERO_STATS = {
 // XP to go from `lv` to `lv+1`. Cumulative to level 10 is ~5,800, against the
 // ~52,000 total bounty a full run puts on the board.
 function heroXpFor(lv) { return Math.round(16 * Math.pow(lv, 1.8)); }
+// rows either side of the gate, alternating outward, so four heroes stand
+// clear of each other instead of stacking on two tiles
+const HERO_SEAT_DY = [-1, 1, -2, 2];
 function heroSpawnPoint(owner) {
   // the gate the heroes defend -- same tile the creeps are marching toward
-  return { x: G.exit.gx * TILE + TILE / 2, y: (G.exit.gy + (owner === 0 ? -1 : 1)) * TILE + TILE / 2 };
+  const dy = HERO_SEAT_DY[owner % HERO_SEAT_DY.length];
+  return { x: G.exit.gx * TILE + TILE / 2, y: clamp(G.exit.gy + dy, 1, GH - 2) * TILE + TILE / 2 };
 }
 function spawnHero(owner) {
   const p = heroSpawnPoint(owner);
@@ -2799,12 +2815,10 @@ function simTick() {
         }
       }
     } else if (G.creeps.length === 0) {
-      // wave clear. Paid to each player's own purse, so halve it in co-op --
-      // same reasoning as the early-call bonus in applyCmd's 'start' branch,
-      // which this one previously missed: co-op was collecting this bonus
-      // in full for BOTH players every single wave.
-      const bonus = NET.active ? Math.round(w.bonus / 2) : w.bonus;
-      G.gold[0] += bonus; G.gold[1] += bonus;
+      // wave clear. Paid into each player's own purse, so it is divided by
+      // the player count -- see sharedBonus.
+      const bonus = sharedBonus(w.bonus);
+      payAll(bonus);
       ev('waveClear', { n: w.n, bonus });
       G.waveIdx++;
       if (G.waveIdx >= WAVES.length && !G.endless) { G.phase = 'won'; ev('won'); }
@@ -3918,7 +3932,7 @@ function drawTower(x, t) {
   x.restore();
   // owner pip (multiplayer)
   if (NET.active) {
-    x.fillStyle = t.owner === 0 ? '#4ea9ff' : '#ff9a4e';
+    x.fillStyle = OWNER_COL[t.owner % OWNER_COL.length];
     x.beginPath(); x.arc(t.x, t.y + 12, 3.2, 0, TAU); x.fill();
     x.strokeStyle = 'rgba(0,0,0,0.6)'; x.lineWidth = 1; x.stroke();
   }
@@ -4166,14 +4180,34 @@ const UI = {
   toast(msg, col) { this.toasts.push({ msg, col: col || '#ffd9a0', life: 2.4 }); if (this.toasts.length > 4) this.toasts.shift(); }
 };
 const NET = {
-  active: false, isHost: true, me: 0, peer: null, conn: null, room: '', status: 'solo',
-  lastSend: 0, gridDirty: true, ping: 0, buf: [], guestMeta: null,
-  send(o) { if (this.conn && this.conn.open) { try { this.conn.send(o); } catch (e) { } } }
+  active: false, isHost: true, me: 0, peer: null, room: '', status: 'solo',
+  lastSend: 0, gridDirty: true, ping: 0, buf: [],
+  // conns is indexed BY SLOT, so conns[2] is always player 2's link and a
+  // player leaving never renumbers anyone else. Slot 0 is the host, so on a
+  // host conns[0] stays null; on a guest the host link lives at conns[0].
+  conns: new Array(MAX_PLAYERS).fill(null),
+  guestMeta: new Array(MAX_PLAYERS).fill(null),
+  send(o) {
+    for (const c of this.conns) if (c && c.open) { try { c.send(o); } catch (e) { } }
+  },
+  // first unused guest slot, or -1 when the room is full
+  freeSlot() {
+    for (let i = 1; i < MAX_PLAYERS; i++) if (!this.conns[i]) return i;
+    return -1;
+  },
+  dropAll() {
+    for (const c of this.conns) { try { if (c) c.close(); } catch (e) { } }
+    this.conns.fill(null);
+  }
 };
 
 /* ============================================================
    HUD
    ============================================================ */
+/* Purse draw order: yours first, then the allies in seat order. You read your
+   own gold constantly and everyone else's occasionally, so it belongs in the
+   fixed leftmost position rather than wherever your seat number landed. */
+function purseOrder(k, n) { return k === 0 ? NET.me : (NET.me + k) % n; }
 function panel(x, px, py, w, h, opts) {
   opts = opts || {};
   x.save();
@@ -4277,12 +4311,17 @@ function drawHUD(x, W, H) {
   drawHeart(x, 26 * S, 4 + tbh / 2, 10 * S, lifeCol);
   txt(x, String(Math.max(0, G.lives)), 44 * S, 4 + tbh / 2, 19 * S, '#ffe9d0', 'left', 800);
   // gold
+  // One purse per player, own purse first. The pitch tightens past two seats
+  // because four at the old 96px spacing ran straight into the wave label.
+  const purses = NET.active ? Math.max(2, G.players) : 1;
+  const pitch = (purses > 2 ? 74 : 96) * S, coinR = (purses > 2 ? 7.5 : 8.5) * S;
   let gxp = 92 * S;
-  for (let i = 0; i < (NET.active ? 2 : 1); i++) {
-    drawCoin(x, gxp + 10 * S, 4 + tbh / 2, 8.5 * S);
-    txt(x, String(G.gold[i] | 0), gxp + 24 * S, 4 + tbh / 2, 16 * S, i === NET.me ? '#ffd76a' : '#c9b98a', 'left', 800);
-    if (NET.active) { x.fillStyle = i === 0 ? '#4ea9ff' : '#ff9a4e'; x.beginPath(); x.arc(gxp + 4 * S, 4 + tbh / 2 - 12 * S, 3 * S, 0, TAU); x.fill(); }
-    gxp += 96 * S;
+  for (let k = 0; k < purses; k++) {
+    const i = purseOrder(k, purses);
+    drawCoin(x, gxp + 10 * S, 4 + tbh / 2, coinR);
+    txt(x, String(G.gold[i] | 0), gxp + 22 * S, 4 + tbh / 2, (purses > 2 ? 13.5 : 16) * S, i === NET.me ? '#ffd76a' : '#c9b98a', 'left', 800);
+    if (NET.active) { x.fillStyle = OWNER_COL[i]; x.beginPath(); x.arc(gxp + 4 * S, 4 + tbh / 2 - 12 * S, 3 * S, 0, TAU); x.fill(); }
+    gxp += pitch;
   }
   // wave
   const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
@@ -4396,12 +4435,19 @@ function drawHUDPortrait(x, W, H, M) {
   const lifeCol = G.lives > 10 ? '#ff9a8a' : '#ff4b3a';
   drawHeart(x, 24, cy, 11, lifeCol);
   txt(x, String(Math.max(0, G.lives)), 40, cy, 18, '#ffe9d0', 'left', 800);
+  // Portrait has far less room: past two players the purses are drawn as a
+  // compact strip (own first) rather than four full-size readouts, which would
+  // not fit beside the menu and speed buttons on a phone.
+  const purses = NET.active ? Math.max(2, G.players) : 1;
+  const wide = purses <= 2;
+  const pitch = wide ? 82 : Math.min(62, (W - 76 - 2 * TOUCH_MIN - 3 * gap) / purses);
   let gxp = 76;
-  for (let i = 0; i < (NET.active ? 2 : 1); i++) {
-    drawCoin(x, gxp + 9, cy, 9);
-    txt(x, String(G.gold[i] | 0), gxp + 22, cy, 15, i === NET.me ? '#ffd76a' : '#c9b98a', 'left', 800);
-    if (NET.active) { x.fillStyle = i === 0 ? '#4ea9ff' : '#ff9a4e'; x.beginPath(); x.arc(gxp + 3, cy - 13, 3, 0, TAU); x.fill(); }
-    gxp += 82;
+  for (let k = 0; k < purses; k++) {
+    const i = purseOrder(k, purses);
+    drawCoin(x, gxp + (wide ? 9 : 7), cy, wide ? 9 : 7);
+    txt(x, String(G.gold[i] | 0), gxp + (wide ? 22 : 17), cy, wide ? 15 : 12, i === NET.me ? '#ffd76a' : '#c9b98a', 'left', 800);
+    if (NET.active) { x.fillStyle = OWNER_COL[i]; x.beginPath(); x.arc(gxp + 2, cy - (wide ? 13 : 11), 3, 0, TAU); x.fill(); }
+    gxp += pitch;
   }
   const mnR = addRect('menu', W - pad - TOUCH_MIN, tY + 2, TOUCH_MIN, TOUCH_MIN, () => openMenu());
   panel(x, mnR.x, mnR.y, mnR.w, mnR.h, { r: 6 });
@@ -4752,20 +4798,29 @@ function issue(cmd) {
 function resetRun(seed) {
   G.mapSeed = seed !== undefined ? seed : (G.mapSeed !== undefined ? G.mapSeed : 20260803);
   applyDifficulty(); // rebuilds WAVES and resets G.lives for the current tier
+  /* Reseed the simulation RNG. setSeed existed but was never called, so
+     SIMRAND just kept running: restarting a map continued the stream rather
+     than replaying it, and no two attempts at the same map were the same run.
+     Keyed off the map seed, so different maps still diverge. */
+  setSeed(G.mapSeed >>> 0);
   G.tick = 0; G.phase = 'prep';
   G.waveIdx = 0; G.spawnGroupIdx = 0; G.spawnLeft = 0; G.spawnTimer = 0;
   G.prepTimer = 30 * TICK_HZ;
-  G.gold = [SOLO_START_GOLD, SOLO_START_GOLD];
+  G.gold = new Array(MAX_PLAYERS).fill(SOLO_START_GOLD);
   if (NET.active) setCoopEconomy();
   // Meta gold bonus (item 4) is per-player: owner 0 is always this machine's
-  // own profile (solo or host), owner 1 -- only meaningful in co-op -- is
-  // the guest's profile once its handshake has arrived (NET.guestMeta),
-  // same resolution metaProfileFor() uses for the damage bonus.
+  // own profile (solo or host), and each guest slot uses the profile that
+  // arrived with its handshake (NET.guestMeta[slot]), the same resolution
+  // metaProfileFor() uses for the damage bonus.
   G.gold[0] += Math.round(metaBonus(META, 'gold'));
-  if (NET.active) G.gold[1] += Math.round(metaBonus(NET.guestMeta || EMPTY_META, 'gold'));
-  G.score = [0, 0]; G.leaked = 0; G.killed = 0;
+  if (NET.active) for (let i = 1; i < MAX_PLAYERS; i++) G.gold[i] += Math.round(metaBonus(NET.guestMeta[i] || EMPTY_META, 'gold'));
+  G.score = new Array(MAX_PLAYERS).fill(0); G.leaked = 0; G.killed = 0;
   G.creeps = []; G.towers = []; G.projs = []; G.nextId = 1;
-  G.heroes = [spawnHero(0), NET.active ? spawnHero(1) : null];
+  // A seat only gets a hero once its player is actually connected; joinPlayer
+  // spawns it then. Slot 0 is this machine and is always present.
+  G.players = NET.active && NET.isHost ? 1 + NET.conns.filter(c => c && c.open).length : (NET.active ? G.players : 1);
+  G.heroes = new Array(MAX_PLAYERS).fill(null);
+  for (let i = 0; i < (NET.active ? G.players : 1); i++) G.heroes[i] = spawnHero(i);
   G.spell[0].cd = 0; G.spell[1].cd = 0;
   G.speed = 1;
   EVQ.length = 0;
@@ -4817,8 +4872,8 @@ function applyCmd(c, who) {
     if (G.phase === 'prep') {
       // paid to each player, so halve it in co-op to keep the pot the same as solo
       const raw = Math.floor(G.prepTimer / TICK_HZ) * 4;
-      const bonus = NET.active ? Math.round(raw / 2) : raw;
-      G.gold[0] += bonus; G.gold[1] += bonus; G.prepTimer = 0; startWave(); ev('early', { bonus });
+      const bonus = sharedBonus(raw);
+      payAll(bonus); G.prepTimer = 0; startWave(); ev('early', { bonus });
     }
   }
 }
@@ -5113,12 +5168,17 @@ function snapshot() {
   // slot 9 (xp fraction) is APPENDED, never inserted -- the hero snapshot is
   // positional like every other array on the wire (see the KIDX/CIDX note).
   const hr = G.heroes.map(h => h ? [Math.round(h.x), Math.round(h.y), Math.round(h.hp), Math.round(h.maxHp), h.level, h.dead ? 1 : 0, Math.round(h.respawnT * 10) / 10, h.dir, h.frame, Math.round(heroXpFrac(h) * 100)] : null);
-  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: [G.gold[0] | 0, G.gold[1] | 0], wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, hr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ms: G.mapSeed, ev: EVQ.slice() };
+  const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: G.gold.map(v => v | 0), pl: G.players, wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, hr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ms: G.mapSeed, ev: EVQ.slice() };
   if (NET.gridDirty) { s.g = Array.from(G.grid); NET.gridDirty = false; }
   return s;
 }
 function applySnapshot(s) {
-  G.tick = s.k; G.phase = s.ph; G.lives = s.lv; G.gold = s.gd; G.waveIdx = s.wi;
+  G.tick = s.k; G.phase = s.ph; G.lives = s.lv; G.waveIdx = s.wi;
+  // gd is now the whole purse array rather than two fixed entries; pad it so a
+  // guest never indexes past the end when reading an empty seat's gold
+  G.gold = new Array(MAX_PLAYERS).fill(0);
+  for (let i = 0; i < Math.min(MAX_PLAYERS, s.gd.length); i++) G.gold[i] = s.gd[i];
+  G.players = s.pl || 2;
   G.prepTimer = s.pt; G.spawnLeft = s.sl; G.spawnGroupIdx = s.sg | 0; G.killed = s.kd; G.leaked = s.lk; G.score = s.sc;
   if (s.sd) G.speed = s.sd;
   G.spell[0].cd = s.sp[0]; G.spell[1].cd = s.sp[1];
@@ -5200,7 +5260,43 @@ function netErr(t) {
 }
 /* Called the moment a co-op session is chosen, before any tower is bought, so
    nobody ever has gold taken away from under them mid-game. */
-function setCoopEconomy() { G.gold[0] = G.gold[1] = COOP_START_GOLD; }
+function setCoopEconomy() { G.gold.fill(COOP_START_GOLD); }
+/* Host-side roster changes. Players are expected to arrive DURING a run (the
+   lobby explicitly invites the host to start while waiting), so a seat is
+   furnished on join rather than pre-allocated: a hero appears, a purse is
+   granted, and G.players -- which every shared payout is divided by -- moves.
+   G.players is game state rather than a read of NET.conns because the
+   simulation divides by it and the snapshot ships it, so a guest agrees. */
+function joinPlayer(slot) {
+  if (!NET.isHost) return;
+  if (!G.heroes[slot]) G.heroes[slot] = spawnHero(slot);
+  // a latecomer gets a starting purse of its own; existing players keep theirs
+  if (!G.gold[slot]) G.gold[slot] = COOP_START_GOLD + Math.round(metaBonus(NET.guestMeta[slot] || EMPTY_META, 'gold'));
+  G.players = 1 + NET.conns.filter(c => c && c.open).length;
+  NET.gridDirty = true;
+}
+function leavePlayer(slot) {
+  if (!NET.isHost) return;
+  // Their towers stay standing and keep earning into their purse: tearing a
+  // departed ally's defence down mid-run would be far worse than leaving it,
+  // and the seat is reusable, so a reconnect picks up where they left off.
+  G.heroes[slot] = null;
+  G.players = 1 + NET.conns.filter(c => c && c.open).length;
+}
+/* Shared payouts (wave clear, early call) land in EVERY player's own purse,
+   so they must be divided or co-op prints money: at two players, paying both
+   in full was worth ~12,000 extra gold a run.
+   The divisor is deliberately softer than a straight /N. Co-op gold is split
+   across separate purses that cannot be pooled, so a party buys shallower:
+   nobody can individually afford a 520g level-3 or a 420g branch as early,
+   and the wave curve punishes a wide shallow board hard. Measured at a
+   straight /N, four players died at wave 21 where one player won at 32 --
+   co-op came out TWICE as hard as solo, which is not what a social mode
+   should be. COOP_SHARE tunes how much of that fragmentation is refunded. */
+const COOP_SHARE = 0.60;
+function coopDivisor() { return 1 + (Math.max(1, G.players) - 1) * COOP_SHARE; }
+function sharedBonus(raw) { return NET.active ? Math.round(raw / coopDivisor()) : raw; }
+function payAll(amount) { for (let i = 0; i < G.players; i++) G.gold[i] += amount; }
 /* Applies the lobby's picked difficulty. Only the host's simulation ever
    drives gameplay (only the host runs simTick), so this is called on every
    entry path for simplicity, but a guest's own call here is purely
@@ -5219,6 +5315,26 @@ function applyDifficulty() {
   // never on a guest, same reasoning as metaProfileFor's doc comment.
   G.lives = (DIFFICULTY[G.difficulty] || DIFFICULTY.normal).lives + Math.round(metaBonus(META, 'lives'));
 }
+/* Host-side lobby panel. Redrawn whenever the roster changes, so the host can
+   see who is actually in before starting -- with four slots "Müttefik katıldı"
+   on its own no longer tells you enough. */
+function hostLobbyMsg() {
+  if (!NET.isHost || !NET.room) return;
+  let rows = '';
+  for (let i = 0; i < MAX_PLAYERS; i++) {
+    const here = i === 0 || (NET.conns[i] && NET.conns[i].open);
+    const label = i === 0 ? 'Sen (kurucu)' : here ? 'Oyuncu ' + (i + 1) : 'boş';
+    rows += '<div style="display:flex;align-items:center;gap:8px;margin:3px 0' + (here ? '' : ';opacity:0.38') + '">' +
+      '<span style="width:10px;height:10px;border-radius:50%;background:' + OWNER_COL[i] + '"></span>' +
+      '<span>' + label + '</span></div>';
+  }
+  lobbyMsg('Oda kodu: <b style="font-size:22px;letter-spacing:3px">' + NET.room + '</b>' +
+    '<br><span class="dim">Arkadaşların bu kodu girsin — en fazla ' + MAX_PLAYERS + ' oyuncu.</span>' +
+    '<div style="margin:10px 0;text-align:left;display:inline-block">' + rows + '</div>' +
+    '<br><span class="dim">Beklerken oynamaya başlayabilirsin; katılanlar oyuna dahil olur.</span>' +
+    '<br><button id="btnGo" class="btn" style="margin-top:10px">Beklerken başla</button>');
+  const b = document.getElementById('btnGo'); if (b) b.onclick = () => closeLobby();
+}
 function netHost(code, attempt) {
   attempt = attempt || 0;
   NET.active = true; NET.isHost = true; NET.me = 0; NET.room = code; NET.status = 'oda ' + code + ' · bekleniyor';
@@ -5228,18 +5344,38 @@ function netHost(code, attempt) {
   try { p = new window.Peer('otuken-' + code, { debug: 0, config: ICE }); }
   catch (e) { lobbyMsg('Çevrimiçi başlatılamadı: ' + e.message); return; }
   NET.peer = p;
-  p.on('open', () => {
-    opened = true;
-    lobbyMsg('Oda kodu: <b style="font-size:22px;letter-spacing:3px">' + code + '</b>' +
-      '<br><span class="dim">Arkadaşın bu kodu girsin. Beklerken oynamaya başlayabilirsin — katıldığında oyuna dahil olur.</span>' +
-      '<br><button id="btnGo" class="btn" style="margin-top:10px">Beklerken başla</button>');
-    const b = document.getElementById('btnGo'); if (b) b.onclick = () => closeLobby();
-  });
+  p.on('open', () => { opened = true; hostLobbyMsg(); });
   p.on('connection', conn => {
-    NET.conn = conn;
-    conn.on('open', () => { NET.status = 'bağlı'; NET.gridDirty = true; closeLobby(); UI.toast('Müttefik katıldı!', '#8fe08a'); });
-    conn.on('data', d => { if (d.t === 'cmd') applyCmd(d.c, 1); else if (d.t === 'meta') NET.guestMeta = d.m; else if (d.t === 'ping') NET.send({ t: 'pong', a: d.a }); });
-    conn.on('close', () => { NET.status = 'bağlantı koptu'; UI.toast('Müttefik ayrıldı', '#ff9a8a'); });
+    const slot = NET.freeSlot();
+    if (slot < 0) {
+      // Room full. Say so and hang up rather than accepting the connection:
+      // this used to overwrite the single NET.conn, which silently cut the
+      // previous guest off from snapshots while still applying its commands.
+      try { conn.on('open', () => { conn.send({ t: 'full' }); setTimeout(() => conn.close(), 300); }); } catch (e) { }
+      return;
+    }
+    NET.conns[slot] = conn;
+    conn.on('open', () => {
+      NET.gridDirty = true;
+      // tell the guest which slot it owns before any snapshot reaches it
+      try { conn.send({ t: 'hello', slot, max: MAX_PLAYERS }); } catch (e) { }
+      joinPlayer(slot);
+      NET.status = 'bağlı · ' + G.players + ' oyuncu';
+      closeLobby(); UI.toast('Müttefik katıldı! (' + G.players + ' oyuncu)', '#8fe08a');
+      hostLobbyMsg();
+    });
+    conn.on('data', d => {
+      if (d.t === 'cmd') applyCmd(d.c, slot);
+      else if (d.t === 'meta') NET.guestMeta[slot] = d.m;
+      else if (d.t === 'ping') { try { conn.send({ t: 'pong', a: d.a }); } catch (e) { } }
+    });
+    conn.on('close', () => {
+      NET.conns[slot] = null;
+      leavePlayer(slot);
+      NET.status = G.players > 1 ? 'bağlı · ' + G.players + ' oyuncu' : 'oda ' + NET.room + ' · bekleniyor';
+      UI.toast('Müttefik ayrıldı', '#ff9a8a');
+      hostLobbyMsg();
+    });
   });
   p.on('error', e => {
     const t = e && e.type;
@@ -5255,20 +5391,33 @@ function netHost(code, attempt) {
   }, 12000);
 }
 function netJoin(code) {
+  // NET.me is provisional until the host's `hello` names our slot -- with four
+  // seats a guest can no longer assume it is player 1.
   NET.active = true; NET.isHost = false; NET.me = 1; NET.room = code; NET.status = 'bağlanıyor';
   setCoopEconomy(); applyDifficulty();
   const p = new window.Peer(undefined, { debug: 0, config: ICE });
   NET.peer = p;
+  let full = false;
   p.on('open', () => {
     const conn = p.connect('otuken-' + code, { reliable: true });
-    NET.conn = conn;
+    NET.conns[0] = conn;   // a guest's only link is to the host
     conn.on('open', () => {
-      NET.status = 'bağlı'; closeLobby(); UI.toast('Odaya katıldın', '#8fe08a');
+      NET.status = 'bağlanıyor';
       NET.send({ t: 'meta', m: META }); // let the host resolve our meta bonuses by owner (see metaProfileFor)
     });
-    conn.on('data', d => { if (d.t === 's') applySnapshot(d); });
-    conn.on('error', () => lobbyMsg('Odaya ulaşılamadı. Kodu kontrol et.'));
-    setTimeout(() => { if (NET.status !== 'bağlı') lobbyMsg('Odaya ulaşılamadı. Kodu kontrol et.'); }, 6000);
+    conn.on('data', d => {
+      if (d.t === 's') applySnapshot(d);
+      else if (d.t === 'hello') {
+        NET.me = d.slot | 0; NET.status = 'bağlı';
+        closeLobby(); UI.toast('Odaya katıldın — oyuncu ' + (NET.me + 1), '#8fe08a');
+        NET.send({ t: 'meta', m: META }); // resend now that the host can attribute it to our slot
+      } else if (d.t === 'full') {
+        full = true; NET.active = false;
+        lobbyMsg('Oda dolu (en fazla ' + MAX_PLAYERS + ' oyuncu).');
+      }
+    });
+    conn.on('error', () => { if (!full) lobbyMsg('Odaya ulaşılamadı. Kodu kontrol et.'); });
+    setTimeout(() => { if (!full && NET.status !== 'bağlı') lobbyMsg('Odaya ulaşılamadı. Kodu kontrol et.'); }, 6000);
   });
   p.on('error', e => lobbyMsg(netErr(e && e.type)));
 }
@@ -5294,7 +5443,14 @@ function loop(ts) {
     // visible burst at all. Now anything queued since the last tick rides along
     // with this tick's own events instead of being silently discarded.
     while (acc >= TICK_MS && guard++ < 8) { acc -= TICK_MS; simTick(); processEvents(EVQ); if (NET.active) NET.buf.push(...EVQ); EVQ.length = 0; }
-    if (NET.active && NET.conn && NET.conn.open && ts - NET.lastSend > 66) {
+    /* Snapshot broadcast. The host uploads one full snapshot (~2.7KB) to every
+       guest, so the cost is linear in the number of guests -- three of them at
+       the old flat 66ms would be ~123KB/s up, which a phone's uplink will not
+       hold. Back the rate off as the room fills (66/80/94ms): guests already
+       lerp creeps between snapshots, so the extra interval costs far less than
+       a saturated uplink would. */
+    const guests = NET.active ? NET.conns.filter(c => c && c.open).length : 0;
+    if (guests && ts - NET.lastSend > 66 + 14 * (guests - 1)) {
       NET.lastSend = ts;
       const snap = snapshot(); snap.ev = NET.buf.splice(0);
       NET.send(snap);
@@ -5487,7 +5643,11 @@ function wireShell() {
   $('setupBack').onclick = () => { closeSetup(); $('lobby').classList.remove('hidden'); };
   $('setupGo').onclick = async () => {
     if (setupMode === 'solo') {
-      NET.active = false; NET.me = 0; resetRun(G.mapSeed); closeSetup(); closeLobby(); Audio2.init();
+      // dropping to solo must also close any room this machine was in, or a
+      // stale open connection keeps feeding commands into the fresh run
+      NET.dropAll(); NET.guestMeta.fill(null);
+      NET.active = false; NET.isHost = true; NET.me = 0; NET.status = 'solo';
+      G.players = 1; resetRun(G.mapSeed); closeSetup(); closeLobby(); Audio2.init();
       return;
     }
     // host: back to the main lobby card so netHost's own status updates
