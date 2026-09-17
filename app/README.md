@@ -46,6 +46,13 @@ npx eas submit --platform ios --profile production --latest
 `eas submit` build kredisi harcamaz; TestFlight'a giden binary ile incelemeye
 gönderilen aynıdır, test sonrası yeniden build gerekmez.
 
+## Game Center
+
+Kurulum ve leaderboard ID'leri: `../store/game-center.md`.
+Entitlement `app.json` içinde; App Store Connect'te Game Center'ı açmayı
+unutma — biri olup diğeri olmazsa ya gönderim bloke olur ya leaderboard
+çalışmaz.
+
 ## Doldurulması gerekenler
 
 `app.json` ve `eas.json` içinde `REPLACE_WITH_...` yazan alanlar: EAS proje

@@ -4973,6 +4973,23 @@ function drawEndScreen(x, W, H, S) {
   const r = addRect('again', W / 2 - ebw / 2, H / 2 + 34 * S, ebw, ebh, () => issue({ k: 'restart' }));
   panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: true, r: 8 });
   txt(x, 'YENİDEN', r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#ffe08a', 'center', 800);
+  /* Leaderboard and share, only inside the app shell -- in a browser there is
+     nothing behind them, so they are not drawn at all rather than drawn dead.
+     The score itself was already submitted silently when the run ended; these
+     are for looking at it and passing it on, which the player asks for. */
+  if (Native.on) {
+    const payload = { won, wave: won ? WAVES.length : G.waveIdx + 1,
+                      difficulty: G.difficulty, score: G.score[NET.me] | 0 };
+    const sbw = (ebw - 8 * S) / 2, sy = r.y + ebh + 10 * S, sbh = Math.max(TOUCH_MIN, 40 * S);
+    const lb = addRect('gcBoard', W / 2 - ebw / 2, sy, sbw, sbh,
+      () => Native.post('leaderboard', payload));
+    panel(x, lb.x, lb.y, lb.w, lb.h, { r: 8 });
+    txt(x, 'SIRALAMA', lb.x + lb.w / 2, lb.y + lb.h / 2, 12 * S, '#cfd6e0', 'center', 800);
+    const sh = addRect('gcShare', W / 2 - ebw / 2 + sbw + 8 * S, sy, sbw, sbh,
+      () => Native.post('share', payload));
+    panel(x, sh.x, sh.y, sh.w, sh.h, { r: 8 });
+    txt(x, 'PAYLAŞ', sh.x + sh.w / 2, sh.y + sh.h / 2, 12 * S, '#cfd6e0', 'center', 800);
+  }
   x.restore();
 }
 

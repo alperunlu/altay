@@ -4966,13 +4966,36 @@ function drawSpellIcon(x, i, cx, cy, r, ready) {
 function drawEndScreen(x, W, H, S) {
   x.save(); x.fillStyle = 'rgba(4,6,10,0.78)'; x.fillRect(0, 0, W, H);
   const won = G.phase === 'won';
-  txt(x, won ? 'KAPI TUTULDU' : 'KAPI DÜŞTÜ', W / 2, H / 2 - 60 * S, 40 * S, won ? '#ffd76a' : '#ff6a4a', 'center', 900);
-  txt(x, won ? `${WAVES.length} dalga geri püskürtüldü.` : `Dalga ${(WAVES[G.waveIdx] || { n: 30 }).n}'de düştün.`, W / 2, H / 2 - 18 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
-  txt(x, `Öldürülen ${G.killed} · Sızan ${G.leaked} · Puan ${G.score[NET.me] | 0}`, W / 2, H / 2 + 8 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
+  /* The shell adds a second row of buttons below the restart. At landscape
+     phone heights that pushed the stack onto the bottom HUD bar, so the whole
+     panel -- text included -- lifts by half the extra row and stays centred
+     either way. Shifting only the buttons put them through the stats line. */
+  const extraRow = Native.on ? Math.max(TOUCH_MIN, 40 * S) + 10 * S : 0;
+  const cy = H / 2 - extraRow / 2;
+  txt(x, won ? 'KAPI TUTULDU' : 'KAPI DÜŞTÜ', W / 2, cy - 60 * S, 40 * S, won ? '#ffd76a' : '#ff6a4a', 'center', 900);
+  txt(x, won ? `${WAVES.length} dalga geri püskürtüldü.` : `Dalga ${(WAVES[G.waveIdx] || { n: 30 }).n}'de düştün.`, W / 2, cy - 18 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
+  txt(x, `Öldürülen ${G.killed} · Sızan ${G.leaked} · Puan ${G.score[NET.me] | 0}`, W / 2, cy + 8 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
   const ebw = Math.max(180, 180 * S), ebh = Math.max(TOUCH_MIN + 4, 44 * S);
-  const r = addRect('again', W / 2 - ebw / 2, H / 2 + 34 * S, ebw, ebh, () => issue({ k: 'restart' }));
+  const r = addRect('again', W / 2 - ebw / 2, cy + 34 * S, ebw, ebh, () => issue({ k: 'restart' }));
   panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: true, r: 8 });
   txt(x, 'YENİDEN', r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#ffe08a', 'center', 800);
+  /* Leaderboard and share, only inside the app shell -- in a browser there is
+     nothing behind them, so they are not drawn at all rather than drawn dead.
+     The score itself was already submitted silently when the run ended; these
+     are for looking at it and passing it on, which the player asks for. */
+  if (Native.on) {
+    const payload = { won, wave: won ? WAVES.length : G.waveIdx + 1,
+                      difficulty: G.difficulty, score: G.score[NET.me] | 0 };
+    const sbw = (ebw - 8 * S) / 2, sy = r.y + ebh + 10 * S, sbh = Math.max(TOUCH_MIN, 40 * S);
+    const lb = addRect('gcBoard', W / 2 - ebw / 2, sy, sbw, sbh,
+      () => Native.post('leaderboard', payload));
+    panel(x, lb.x, lb.y, lb.w, lb.h, { r: 8 });
+    txt(x, 'SIRALAMA', lb.x + lb.w / 2, lb.y + lb.h / 2, 12 * S, '#cfd6e0', 'center', 800);
+    const sh = addRect('gcShare', W / 2 - ebw / 2 + sbw + 8 * S, sy, sbw, sbh,
+      () => Native.post('share', payload));
+    panel(x, sh.x, sh.y, sh.w, sh.h, { r: 8 });
+    txt(x, 'PAYLAŞ', sh.x + sh.w / 2, sh.y + sh.h / 2, 12 * S, '#cfd6e0', 'center', 800);
+  }
   x.restore();
 }
 

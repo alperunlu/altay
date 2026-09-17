@@ -8,6 +8,7 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { Share } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import * as GameServices from 'react-native-game-services';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -19,6 +20,18 @@ const GAME = require('./assets/game/index.html');
    native side keeps the authoritative copy in a real file and hands it to
    the page before load. */
 const META_FILE = FileSystem.documentDirectory + 'altay-meta.json';
+
+/* Game Center leaderboards, one per difficulty so a hard-mode run is not
+   ranked against an easy one. These IDs must match what is created in App
+   Store Connect exactly -- submitting to an ID that does not exist there
+   fails silently, which is the usual reason a leaderboard "does not work".
+   Ranked by score (the run's bounty total) rather than waves survived:
+   plenty of players will finish all 32 waves, and score breaks those ties. */
+const LEADERBOARDS = {
+  easy: 'altay.score.easy',
+  normal: 'altay.score.normal',
+  hard: 'altay.score.hard'
+};
 
 async function readMeta() {
   try {
@@ -78,6 +91,20 @@ export default function App() {
   const [meta, setMeta] = useState(undefined);   // undefined = not read yet
   const webRef = useRef(null);
   useKeepAwake();   // a tower-defence wave can run minutes without a touch
+  const gcReady = useRef(false);
+
+  /* Authenticate against Game Center once, quietly. A player who is not
+     signed in, or who declines, simply gets no leaderboard -- it must never
+     block or interrupt getting into the game. */
+  useEffect(() => {
+    (async () => {
+      try {
+        GameServices.initialize();
+        await GameServices.signIn();
+        gcReady.current = await GameServices.isAuthenticated();
+      } catch (e) { gcReady.current = false; }
+    })();
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -122,7 +149,23 @@ export default function App() {
         writeMeta(msg.payload);
         break;
       case 'score': {
-        // Nothing is uploaded anywhere -- the player chooses whether to share.
+        /* Submitted silently. Throwing a share sheet in the player's face the
+           instant a run ends is an interruption they did not ask for; the end
+           screen has a button for the leaderboard and one for sharing. */
+        const p = msg.payload || {};
+        const board = LEADERBOARDS[p.difficulty] || LEADERBOARDS.normal;
+        if (gcReady.current) {
+          GameServices.submitScore(board, Math.max(0, p.score | 0)).catch(() => {});
+        }
+        break;
+      }
+      case 'leaderboard': {
+        const p = msg.payload || {};
+        const board = LEADERBOARDS[p.difficulty] || LEADERBOARDS.normal;
+        if (gcReady.current) GameServices.showLeaderboard(board).catch(() => {});
+        break;
+      }
+      case 'share': {
         const p = msg.payload || {};
         const line = p.won
           ? `Altay'da ${p.wave} dalganın hepsini tuttum. Puan ${p.score}.`
