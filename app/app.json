@@ -8,7 +8,9 @@
     "scheme": "altay",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0b0d12",
-    "assetBundlePatterns": ["assets/**/*"],
+    "assetBundlePatterns": [
+      "assets/**/*"
+    ],
     "ios": {
       "bundleIdentifier": "com.alperunlu.altay",
       "buildNumber": "1",
@@ -24,8 +26,7 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#0b0d12"
-      },
-      "edgeToEdgeEnabled": true
+      }
     },
     "plugins": [
       [
@@ -39,7 +40,9 @@
       ]
     ],
     "extra": {
-      "eas": { "projectId": "REPLACE_WITH_EAS_PROJECT_ID" }
+      "eas": {
+        "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
+      }
     }
   }
 }
