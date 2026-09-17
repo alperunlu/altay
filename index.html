@@ -2275,14 +2275,45 @@ const META_TREE = {
   spell: { name: 'Gök Bilgesi',     desc: 'Büyü bekleme süresi -%4',            max: 5, cost: [60, 120, 190, 270, 360], perLevel: 0.04 }
 };
 const EMPTY_META = { currency: 0, lv: {} };
+/* ============================================================
+   NATIVE BRIDGE
+   Present only inside the iOS/Android shell (see app/App.js), which injects
+   window.__altayNative before this file's scripts run. Everything here is
+   feature-detected, so the exact same file keeps working unchanged in a
+   browser -- where the handle is simply absent and every call is a no-op.
+   ============================================================ */
+const Native = {
+  on: typeof window !== 'undefined' && !!window.__altayNative,
+  post(type, payload) {
+    if (!this.on) return;
+    try { window.__altayNative.post(type, payload); } catch (e) { }
+  },
+  /* Haptics. Deliberately sparse: a tower-defence board fires hundreds of
+     events a minute and buzzing on all of them is worse than silence. Only
+     moments the player is meant to feel get one. */
+  haptic(kind) { this.post('haptic', kind); },
+  score(payload) { this.post('score', payload); },
+  /* The meta profile is the only thing that must survive being closed, and
+     localStorage against a file:// origin is not something to trust a
+     player's progression to. The shell hands the stored copy in through
+     window.__altayMeta before load and takes every write back. */
+  saveMeta(meta) { this.post('meta', meta); }
+};
+
 function loadMeta() {
+  // Inside the app shell the native side is the authority and has already
+  // parked the stored profile on window.__altayMeta; in a browser that is
+  // undefined and localStorage is the only store.
   try {
-    const raw = JSON.parse(localStorage.getItem(META_KEY));
+    const raw = window.__altayMeta || JSON.parse(localStorage.getItem(META_KEY));
     if (raw && typeof raw === 'object') return { currency: raw.currency | 0, lv: raw.lv || {} };
   } catch (e) { /* localStorage unavailable (private mode, quota, etc) -- fall back to a fresh profile */ }
   return { currency: 0, lv: {} };
 }
-function saveMeta() { try { localStorage.setItem(META_KEY, JSON.stringify(META)); } catch (e) { } }
+function saveMeta() {
+  try { localStorage.setItem(META_KEY, JSON.stringify(META)); } catch (e) { }
+  Native.saveMeta(META);   // no-op outside the shell
+}
 let META = loadMeta();
 function metaLevel(profile, key) { return (profile && profile.lv && profile.lv[key] | 0) || 0; }
 function metaBonus(profile, key) { return metaLevel(profile, key) * META_TREE[key].perLevel; }
@@ -5278,7 +5309,7 @@ function processEvents(list) {
       case 'chain': FX.chain(e.from, e.hits); break;
       case 'suppress': FX.suppress(e.x, e.y, e.tx, e.ty); break;
       case 'heroHit': FX.hit(e.x, e.y, 0); break;
-      case 'heroDown': UI.toast('Kahraman düştü! Yakında dirilecek', '#ff9a8a'); break;
+      case 'heroDown': UI.toast('Kahraman düştü! Yakında dirilecek', '#ff9a8a'); Native.haptic('medium'); break;
       case 'heroLevel':
         FX.ring(e.x, e.y, 4, 40, '255,220,140', 0.6, 3);
         if (e.owner === NET.me) UI.toast(`Kahraman seviye ${e.lv}`, '#ffd76a');
@@ -5291,10 +5322,10 @@ function processEvents(list) {
         FX.death(e.x, e.y, e.boss, e.ctype);
         if (e.owner === NET.me) FX.gold(e.x, e.y - 10, e.gold);
         Audio2.play(e.boss ? 'bossDeath' : 'death', e.boss ? 1 : 0.5, panOf(e.x));
-        if (e.boss) UI.toast('Kağan devrildi! +' + e.gold, '#ffd76a');
+        if (e.boss) { UI.toast('Kağan devrildi! +' + e.gold, '#ffd76a'); Native.haptic('heavy'); }
         break;
       case 'leak':
-        FX.leak(e.x, e.y, e.boss); Audio2.play('leak', 1);
+        FX.leak(e.x, e.y, e.boss); Audio2.play('leak', 1); Native.haptic('warning');
         UI.toast(`Kapıdan sızdı! −${e.amt} can`, '#ff7a6a');
         break;
       case 'waveStart':
@@ -5303,14 +5334,16 @@ function processEvents(list) {
         break;
       case 'waveClear': UI.toast(`Dalga ${e.n} temizlendi · +${e.bonus} altın`, '#8fe08a'); Audio2.play('coin'); break;
       case 'early': UI.toast(`Erken çağrı bonusu +${e.bonus}`, '#ffd76a'); break;
-      case 'build': Audio2.play('build'); FX.ring(e.x, e.y, 4, 34, '255,220,140', 0.4, 3); break;
+      case 'build': Audio2.play('build'); FX.ring(e.x, e.y, 4, 34, '255,220,140', 0.4, 3); Native.haptic('light'); break;
       case 'sell': Audio2.play('sell'); FX.ring(e.x, e.y, 4, 30, '200,220,255', 0.35, 2); break;
       // This handler runs on both host and guest (events flow through
       // EVQ -> NET.buf -> the guest's own processEvents), so each machine
       // awards its OWN local META currency independently here rather than
       // this being simulation state that needs syncing.
-      case 'won': Audio2.play('victory'); UI.toast(`+${awardMetaCurrency(true)} Şan`, '#ffd76a'); break;
-      case 'lost': Audio2.play('defeat'); UI.toast(`+${awardMetaCurrency(false)} Şan`, '#ffd76a'); break;
+      case 'won': Audio2.play('victory'); UI.toast(`+${awardMetaCurrency(true)} Şan`, '#ffd76a');
+        Native.haptic('success'); Native.score({ won: true, wave: WAVES.length, difficulty: G.difficulty, map: G.mapSeed, score: G.score[NET.me] | 0 }); break;
+      case 'lost': Audio2.play('defeat'); UI.toast(`+${awardMetaCurrency(false)} Şan`, '#ffd76a');
+        Native.haptic('error'); Native.score({ won: false, wave: G.waveIdx + 1, difficulty: G.difficulty, map: G.mapSeed, score: G.score[NET.me] | 0 }); break;
       case 'sfx': Audio2.play(e.name, 0.7, panOf(e.x)); break;
     }
   }

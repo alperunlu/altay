@@ -3,12 +3,36 @@ import { BackHandler, Platform, StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Asset } from 'expo-asset';
 import * as Haptics from 'expo-haptics';
+import * as FileSystem from 'expo-file-system';
+import { useKeepAwake } from 'expo-keep-awake';
+import { Share } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const GAME = require('./assets/game/index.html');
+
+/* The meta profile (permanent upgrades) is the only state that must survive
+   the app being closed. The page persists it to localStorage, but a
+   file:// origin is not somewhere to trust a player's progression, so the
+   native side keeps the authoritative copy in a real file and hands it to
+   the page before load. */
+const META_FILE = FileSystem.documentDirectory + 'altay-meta.json';
+
+async function readMeta() {
+  try {
+    const info = await FileSystem.getInfoAsync(META_FILE);
+    if (!info.exists) return null;
+    const raw = await FileSystem.readAsStringAsync(META_FILE);
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (e) { return null; }
+}
+
+async function writeMeta(meta) {
+  try { await FileSystem.writeAsStringAsync(META_FILE, JSON.stringify(meta)); } catch (e) { }
+}
 
 /* Injected before the page's own scripts run.
    Two jobs:
@@ -17,6 +41,10 @@ const GAME = require('./assets/game/index.html');
    2. Kill the gestures a full-screen canvas game must not have -- pinch-zoom,
       double-tap zoom, long-press callouts, text selection and rubber-band
       scrolling all fight the game's own pan/zoom handling. */
+const injectFor = (meta) => `
+  window.__altayMeta = ${meta ? JSON.stringify(meta) : 'null'};
+` + INJECT;
+
 const INJECT = `
 (function () {
   if (window.__altayNative) return;
@@ -47,7 +75,9 @@ true;
 
 export default function App() {
   const [uri, setUri] = useState(null);
+  const [meta, setMeta] = useState(undefined);   // undefined = not read yet
   const webRef = useRef(null);
+  useKeepAwake();   // a tower-defence wave can run minutes without a touch
 
   useEffect(() => {
     let alive = true;
@@ -55,8 +85,10 @@ export default function App() {
       // downloadAsync resolves the bundled asset to a real on-device file://
       // path; without it localUri is null on a production build.
       const asset = Asset.fromModule(GAME);
-      await asset.downloadAsync();
-      if (alive) setUri(asset.localUri || asset.uri);
+      const [, stored] = await Promise.all([asset.downloadAsync(), readMeta()]);
+      if (!alive) return;
+      setMeta(stored);
+      setUri(asset.localUri || asset.uri);
     })();
     return () => { alive = false; };
   }, []);
@@ -86,6 +118,18 @@ export default function App() {
         else Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         break;
       }
+      case 'meta':
+        writeMeta(msg.payload);
+        break;
+      case 'score': {
+        // Nothing is uploaded anywhere -- the player chooses whether to share.
+        const p = msg.payload || {};
+        const line = p.won
+          ? `Altay'da ${p.wave} dalganın hepsini tuttum. Puan ${p.score}.`
+          : `Altay'da ${p.wave}. dalgada düştüm. Puan ${p.score}.`;
+        Share.share({ message: line }).catch(() => {});
+        break;
+      }
       default:
         break;
     }
@@ -97,7 +141,7 @@ export default function App() {
     SplashScreen.hideAsync().catch(() => {});
   }, []);
 
-  if (!uri) return <View style={styles.root} />;
+  if (!uri || meta === undefined) return <View style={styles.root} />;
 
   return (
     <View style={styles.root}>
@@ -112,7 +156,7 @@ export default function App() {
         allowFileAccess
         allowFileAccessFromFileURLs
         allowUniversalAccessFromFileURLs
-        injectedJavaScriptBeforeContentLoaded={INJECT}
+        injectedJavaScriptBeforeContentLoaded={injectFor(meta)}
         onMessage={onMessage}
         onLoadEnd={onLoadEnd}
         // canvas-game ergonomics
