@@ -1,0 +1,28 @@
+{
+  "name": "altay",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "sync-game": "node scripts/sync-game.js",
+    "prestart": "npm run sync-game",
+    "start": "expo start",
+    "doctor": "npx expo-doctor",
+    "verify": "npm run sync-game && npx expo-doctor && npx expo export --platform ios --output-dir /tmp/expo-check"
+  },
+  "dependencies": {
+    "expo": "~57.0.23",
+    "expo-asset": "~57.0.17",
+    "expo-haptics": "~57.0.3",
+    "expo-splash-screen": "~57.0.9",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-webview": "13.16.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "babel-preset-expo": "~57.0.12"
+  }
+}
