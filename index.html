@@ -664,19 +664,43 @@ function bakeTerrain(grid) {
   // than the same field with the rocks shuffled
   const [GRASS_D, GRASS_L, DRY, MOSS] = mapBySeed(G.mapSeed).pal;
   const BUMP_E = 4; // finite-difference step for the fake normal-map pass
+  /* The five low-frequency fields (n, d, macro and its two finite-difference
+     neighbours) are sampled on a coarse lattice and bilinearly interpolated,
+     rather than evaluated per pixel. Their shortest wavelength is 96px and
+     the whole canvas is 1.76M pixels, so a per-pixel evaluation was spending
+     the overwhelming majority of the bake resolving detail the noise does not
+     contain -- terrain alone was 1.3s of a 2.3s cold start, which on a phone
+     is several seconds of blank splash. `micro` stays per-pixel: at a 7px
+     wavelength it is the one field that genuinely needs it. */
+  const LOD = 8, CW = Math.ceil(WORLD_W / LOD) + 2, CH = Math.ceil(WORLD_H / LOD) + 2;
+  const fN = new Float32Array(CW * CH), fD = new Float32Array(CW * CH);
+  const fM = new Float32Array(CW * CH), fMX = new Float32Array(CW * CH), fMY = new Float32Array(CW * CH);
+  for (let cy = 0; cy < CH; cy++) for (let cx = 0; cx < CW; cx++) {
+    const px = cx * LOD, py = cy * LOD, nx = px / 96, ny = py / 96, i = cy * CW + cx;
+    fN[i] = fbm(nx, ny, 5) * 0.5 + 0.5;
+    fD[i] = fbm(nx * 3.1 + 40, ny * 3.1 - 20, 3) * 0.5 + 0.5;
+    fM[i] = fbm(nx / 2.4 + 60, ny / 2.4 - 35, 3) * 0.5 + 0.5;
+    fMX[i] = fbm((px + BUMP_E) / 230 + 60, py / 230 - 35, 3) * 0.5 + 0.5;
+    fMY[i] = fbm(px / 230 + 60, (py + BUMP_E) / 230 - 35, 3) * 0.5 + 0.5;
+  }
+  const lerpField = (f, cx, cy, tx, ty) => {
+    const i = cy * CW + cx, a = f[i], b = f[i + 1], c2 = f[i + CW], d2 = f[i + CW + 1];
+    return (a + (b - a) * tx) + ((c2 + (d2 - c2) * tx) - (a + (b - a) * tx)) * ty;
+  };
   for (let py = 0; py < WORLD_H; py++) {
+    const cy = (py / LOD) | 0, ty = py / LOD - cy;
     for (let px = 0; px < WORLD_W; px++) {
-      const nx = px / 96, ny = py / 96;
-      let n = fbm(nx, ny, 5) * 0.5 + 0.5;
-      const d = fbm(nx * 3.1 + 40, ny * 3.1 - 20, 3) * 0.5 + 0.5;
+      const cx = (px / LOD) | 0, tx = px / LOD - cx;
+      let n = lerpField(fN, cx, cy, tx, ty);
+      const d = lerpField(fD, cx, cy, tx, ty);
       const micro = fbm(px / 7, py / 7, 2) * 0.5 + 0.5;
       // low-frequency undulation, sampled twice more (offset by BUMP_E px) to fake a
       // normal map: the gradient between the three samples tells us which way the
       // "ground" leans relative to LIGHT, so ridges catch a highlight and hollows
       // pool with shadow — cheap multi-octave bump without any real geometry.
-      const macro = fbm(nx / 2.4 + 60, ny / 2.4 - 35, 3) * 0.5 + 0.5;
-      const macroX = fbm((px + BUMP_E) / 230 + 60, py / 230 - 35, 3) * 0.5 + 0.5;
-      const macroY = fbm(px / 230 + 60, (py + BUMP_E) / 230 - 35, 3) * 0.5 + 0.5;
+      const macro = lerpField(fM, cx, cy, tx, ty);
+      const macroX = lerpField(fMX, cx, cy, tx, ty);
+      const macroY = lerpField(fMY, cx, cy, tx, ty);
       const slope = (macroX - macro) * -LIGHT.x + (macroY - macro) * -LIGHT.y;
       // stronger amplitude than phase-1 (16 -> 24, wider clamp) so the fake normal-
       // map ridges/hollows dominate the read at gameplay zoom instead of leaving any
