@@ -134,7 +134,9 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
       <button id="diffHard" data-diff="hard">Zor</button>
     </div>
     <div class="kicker" style="margin-bottom:6px">Harita</div>
-    <select id="mapSelect" style="margin-bottom:24px"></select>
+    <select id="mapSelect"></select>
+    <!-- What this map+difficulty is worth: cleared already, or how far you got -->
+    <div id="setupRecord" style="margin:8px 0 22px;font-size:12px;opacity:.72;min-height:16px"></div>
     <button class="primary" id="setupGo">Devam Et</button>
     <button class="ghost" id="setupBack">Geri</button>
   </div>
@@ -229,7 +231,7 @@ const LANE_ROWS = [4, 15];
    corruption, and OTA updates (where clients legitimately sit on different
    bundles for a while) make it MORE likely, not less. */
 const APP_VERSION = '1.0.0';
-const NET_PROTOCOL = 2;
+const NET_PROTOCOL = 3;
 const HANDSHAKE_MS = 5000;   // a guest that hasn't identified itself by now is too old to talk to
 
 const MAX_PLAYERS = 4;
@@ -2306,9 +2308,31 @@ function loadMeta() {
   // undefined and localStorage is the only store.
   try {
     const raw = window.__altayMeta || JSON.parse(localStorage.getItem(META_KEY));
-    if (raw && typeof raw === 'object') return { currency: raw.currency | 0, lv: raw.lv || {} };
+    if (raw && typeof raw === 'object') return { currency: raw.currency | 0, lv: raw.lv || {}, runs: raw.runs || {} };
   } catch (e) { /* localStorage unavailable (private mode, quota, etc) -- fall back to a fresh profile */ }
-  return { currency: 0, lv: {} };
+  return { currency: 0, lv: {}, runs: {} };
+}
+/* Per map+difficulty record. The save used to hold nothing but currency and
+   upgrade levels, so there were fifteen map/difficulty combinations and no
+   trace anywhere of which ones you had beaten -- nothing to aim at and
+   nothing to tick off. `runs` is keyed "<mapSeed>:<difficulty>" and holds the
+   furthest wave reached and whether it was ever cleared. Old saves simply
+   have no `runs` key and start empty, so nothing needs migrating. */
+function runKey(seed, diff) { return (seed | 0) + ':' + diff; }
+function runRecord(seed, diff) { return (META.runs && META.runs[runKey(seed, diff)]) || null; }
+function recordRun(won, wave) {
+  if (G.endless) return;   // endless is a score chase, not a completion target
+  if (!META.runs) META.runs = {};
+  const k = runKey(G.mapSeed, G.difficulty);
+  const prev = META.runs[k] || { best: 0, won: 0 };
+  META.runs[k] = { best: Math.max(prev.best | 0, wave | 0), won: prev.won || won ? 1 : 0 };
+}
+/* How much of the campaign is finished, for the menu line. */
+function campaignProgress() {
+  let cleared = 0;
+  const diffs = Object.keys(DIFFICULTY);
+  for (const m of MAPS) for (const d of diffs) { const r = runRecord(m.seed, d); if (r && r.won) cleared++; }
+  return { cleared, total: MAPS.length * diffs.length };
 }
 function saveMeta() {
   try { localStorage.setItem(META_KEY, JSON.stringify(META)); } catch (e) { }
@@ -2332,7 +2356,9 @@ function metaDmgMult(owner) { return 1 + metaBonus(metaProfileFor(owner), 'dmg')
 function awardMetaCurrency(won) {
   const diffMult = { easy: 0.8, normal: 1, hard: 1.3 }[G.difficulty] || 1;
   const gained = Math.round((G.waveIdx * 4 + (won ? 40 : 0)) * diffMult);
-  META.currency += gained; saveMeta();
+  META.currency += gained;
+  recordRun(won, won ? WAVES.length : G.waveIdx + 1);
+  saveMeta();
   return gained;
 }
 /* Wave composition. Every entry is a list of [type,count] groups that spawn
@@ -2343,6 +2369,31 @@ function awardMetaCurrency(won) {
        support+bruiser) so one tower type is never the whole answer;
      - bosses at 10 / 20 / 30 arrive with an escort, and 31-32 are a real
        finale -- 32 fields all three bosses at once. */
+/* Endless-mode state. Declared up here because buildWaves() runs once at
+   module load and calls seedEndless(); a `const` further down the file is
+   still in its temporal dead zone at that moment. */
+const ENDLESS_HP_GROWTH = 1.065;   // per wave past the campaign
+const ENDLESS_PAY_GROWTH = 1.05;   // deliberately a shade behind the HP
+const ENDLESS_ORDER = [
+  [['wraith', 20], ['gargoyle', 10], ['grunt', 12]],
+  [['ogre', 18], ['umay', 6], ['kobold', 16]],
+  [['grunt', 30], ['basci', 8], ['ghoul', 14]],
+  [['yelbegen', 7], ['ogre', 14], ['harpy', 12]],
+  [['khan', 1], ['wyrm', 1], ['grunt', 18]],          // every 5th: twin bosses
+  [['gargoyle', 24], ['wraith', 18], ['basci', 8]],
+  [['ogre', 20], ['yelbegen', 6], ['umay', 6]],
+  [['harpy', 26], ['gargoyle', 14], ['wraith', 14]],
+  [['grunt', 34], ['ogre', 16], ['basci', 9]],
+  [['titan', 1], ['khan', 1], ['wyrm', 1], ['ogre', 16]]  // every 10th: all three
+];
+const ENDLESS = { hp: 0, bounty: 0, bonus: 0, scale: null, map: null, cache: [] };
+function seedEndless(lastWave, econ, scale, mapCfg) {
+  ENDLESS.hp = lastWave.groups.reduce((s, g) => s + g.count * g.hp, 0);
+  ENDLESS.bounty = lastWave.groups.reduce((s, g) => s + g.count * g.bounty, 0);
+  ENDLESS.bonus = lastWave.bonus;
+  ENDLESS.scale = scale; ENDLESS.map = mapCfg; ENDLESS.cache = [];
+}
+
 const WAVE_ORDER = [
   /*  1 */[['kobold', 12]],
   /*  2 */[['kobold', 16]],
@@ -2452,7 +2503,10 @@ function buildWaves(difficulty, mapSeed) {
       delay: gi === 0 ? 0 : 90 // ticks after the previous group empties before this one starts
     }));
     econ += pw.income;
-    return { n: i + 1, groups, boss: groups.some(g => g.boss), bonus: Math.round(pw.bonus * scale.bounty) };
+    const wave = { n: i + 1, groups, boss: groups.some(g => g.boss), bonus: Math.round(pw.bonus * scale.bounty) };
+    // hand the endless generator the state it needs to carry on from wave 33
+    if (i === plan.length - 1) seedEndless(wave, econ, scale, mapCfg);
+    return wave;
   });
 }
 let WAVES = buildWaves('normal', MAPS[0].seed);
@@ -2728,6 +2782,25 @@ function spawnSplitChild(parent, intoKey, hp, bounty) {
    upgrade step, it's a fork), so every OTHER caller that keys off t.lvl
    (buildT animation scale, upgradeCost, the 'MAKS' label, abilityOf) keeps
    working unmodified after a branch is chosen. */
+/* Reinforcement: the repeatable upgrade a maxed tower can keep taking.
+   It exists because the board has a hard power ceiling -- around seventy
+   towers at level 3 with a branch, and after that gold buys nothing. Measured
+   in endless mode, the run sat on 43,814 unspent gold with every tower maxed
+   and then died to the next wave, which no HP curve can fix: without a sink
+   that converts gold into power, "endless" is always a wall. Cost climbs
+   steeply so it never trivialises the campaign, where a player who keeps
+   expanding has no spare gold for it anyway. */
+const REINFORCE = { base: 260, growth: 1.42, dmgPerLevel: 0.14 };
+function reinforceCost(t) { return Math.round(REINFORCE.base * Math.pow(REINFORCE.growth, t.reinf || 0)); }
+function reinforceMult(t) { return 1 + (t.reinf || 0) * REINFORCE.dmgPerLevel; }
+function reinforceTower(t, owner) {
+  if (t.owner !== owner) return { ok: false, why: 'Bu kule senin değil' };
+  if (t.lvl < 2 || t.branch == null) return { ok: false, why: 'Önce seviye 3 ve dal gerek' };
+  const cost = reinforceCost(t);
+  if (G.gold[owner] < cost) return { ok: false, why: 'Altın yetersiz' };
+  G.gold[owner] -= cost; t.invest += cost; t.reinf = (t.reinf || 0) + 1;
+  return { ok: true };
+}
 function towerStat(t) { return t.branch != null ? TOWERS[t.kind].branch[t.branch] : TOWERS[t.kind].lv[t.lvl]; }
 /* Merged, tower-INSTANCE-aware version of TOWERS[t.kind] for the handful of
    mechanical (non-numeric-stat) fields a branch can override: dmgType, air,
@@ -2758,7 +2831,7 @@ function placeTower(kind, gx, gy, owner) {
   const i = idxOf(gx, gy); G.grid[i] = 1;
   const t = {
     id: G.nextId++, kind, lvl: 0, gx, gy, x: gx * TILE + TILE / 2, y: gy * TILE + TILE / 2,
-    cd: 0, angle: -Math.PI / 2, owner, kills: 0, dmg: 0, invest: def.cost, target: 0,
+    cd: 0, angle: -Math.PI / 2, owner, kills: 0, dmg: 0, invest: def.cost, target: 0, reinf: 0,
     mode: 0, recoil: 0, buildT: TICK_HZ * 0.5,
     // Phase 2 item 3: per-tower active-ability state. acd is the ability's own
     // cooldown (seconds); buffT/buffMult are a generic "temporarily firing
@@ -3003,13 +3076,41 @@ function simTick() {
 
   if (G.lives <= 0 && G.phase !== 'over') { G.phase = 'over'; ev('lost'); }
 }
+/* ---------- endless mode ----------
+   The old generator grew HP at 1.18 per wave while paying out bounty+1 per
+   wave: HP multiplied 5.2x every ten waves against an income that moved 7%.
+   Measured, that ended the run at wave 39 no matter how well it was played,
+   with nearly 8,000 gold left unspent because there was nothing the player
+   could still buy. It was a wall seven waves past the campaign, not a ladder.
+   It also sent one creep type per wave, discarding every mixed composition
+   the campaign is built on.
+
+   It now continues from where the campaign left off -- same totals, same
+   split by archetype toughness -- and grows HP and payout together, so the
+   player keeps buying and the run ends when the board genuinely runs out of
+   room rather than when an exponent outruns a constant. */
 function endlessWave(i) {
-  const keys = ['grunt', 'ogre', 'wraith', 'gargoyle', 'titan'];
-  const t = keys[i % keys.length], boss = (i % 5 === 4);
-  const type = boss ? 'titan' : t;
-  const group = { type, count: boss ? 2 : 26, boss,
-    hp: Math.round(2400 * Math.pow(1.18, i - 29)), bounty: 40 + i, speed: CREEPS[t].speed * 1.3, gap: boss ? 60 : 9, delay: 0 };
-  return { n: i + 1, groups: [group], boss, bonus: 300 + i * 20 };
+  const k = i - WAVE_ORDER.length;                 // 0 = the first wave past the campaign
+  if (k < 0 || !ENDLESS.scale) return WAVES[WAVES.length - 1];
+  if (ENDLESS.cache[k]) return ENDLESS.cache[k];
+  const hpMulOf = type => CREEPS[type].hpMul || 1;
+  const raw = ENDLESS_ORDER[k % ENDLESS_ORDER.length];
+  const totalHp = ENDLESS.hp * Math.pow(ENDLESS_HP_GROWTH, k + 1);
+  const payMul = Math.pow(ENDLESS_PAY_GROWTH, k + 1);
+  const weight = raw.reduce((s, [t, c]) => s + c * hpMulOf(t), 0) || 1;
+  const unitPay = ENDLESS.bounty / Math.max(1, raw.reduce((s, [, c]) => s + c, 0));
+  const groups = raw.map(([type, count], gi) => ({
+    type, count, boss: !!CREEPS[type].boss,
+    hp: Math.max(1, Math.round(totalHp * hpMulOf(type) / weight)),
+    bounty: Math.max(1, Math.round(unitPay * payMul * hpMulOf(type))),
+    speed: CREEPS[type].speed * 1.3,
+    gap: CREEPS[type].boss ? 60 : 9,
+    delay: gi === 0 ? 0 : 90
+  }));
+  const w = { n: i + 1, groups, boss: groups.some(g => g.boss),
+              bonus: Math.round(ENDLESS.bonus * payMul) };
+  ENDLESS.cache[k] = w;
+  return w;
 }
 function startWave() {
   if (G.phase === 'wave') return;
@@ -3226,7 +3327,7 @@ function fire(t, tgt, px, py) {
   // mutate it in place) turns into an actual damage value, exactly the same
   // pattern item 3's buffMult uses for fire rate: multiply at the point of
   // use, never inside towerStat() itself.
-  const mdm = metaDmgMult(t.owner);
+  const mdm = metaDmgMult(t.owner) * reinforceMult(t);
   if (def.proj === 'chain') {
     // instant chain lightning
     const hits = []; let cur = tgt, dmg = st.dmg * mdm;
@@ -4828,9 +4929,11 @@ function drawInfoPanelPortrait(x, px, py, w, h) {
   const uR = addRect('up', rectAt(0), byy, bw, TOUCH_MIN, () => cmdUpgrade());
   const sR = addRect('sell', rectAt(1), byy, bw, TOUCH_MIN, () => cmdSell());
   const mR = addRect('mode', rectAt(2), byy, bw, TOUCH_MIN, () => cmdMode());
-  const canUp = nxt && G.gold[NET.me] >= nxt.cost && t.owner === NET.me;
+  const maxed = towerMaxed(t), rCost = maxed ? reinforceCost(t) : 0;
+  const canUp = t.owner === NET.me && (maxed ? G.gold[NET.me] >= rCost : (nxt && G.gold[NET.me] >= nxt.cost));
   panel(x, uR.x, uR.y, uR.w, uR.h, { r: 5, gold: canUp });
-  txt(x, nxt ? `YÜKSELT ${nxt.cost}` : 'MAKS', uR.x + uR.w / 2, uR.y + uR.h / 2, 9.5, canUp ? '#ffd76a' : '#8a8578', 'center', 800);
+  txt(x, maxed ? `TAKVİYE ${rCost}` : nxt ? `YÜKSELT ${nxt.cost}` : 'MAKS',
+    uR.x + uR.w / 2, uR.y + uR.h / 2, 9.5, canUp ? '#ffd76a' : '#8a8578', 'center', 800);
   panel(x, sR.x, sR.y, sR.w, sR.h, { r: 5 });
   txt(x, `SAT ${Math.round(t.invest * 0.72)}`, sR.x + sR.w / 2, sR.y + sR.h / 2, 9.5, '#e0c9a0', 'center', 800);
   panel(x, mR.x, mR.y, mR.w, mR.h, { r: 5 });
@@ -4908,9 +5011,11 @@ function drawInfoPanel(x, px, py, w, h, S) {
   const uR = addRect('up', rectAt(0), byy, bw, 24 * S, () => cmdUpgrade());
   const sR = addRect('sell', rectAt(1), byy, bw, 24 * S, () => cmdSell());
   const mR = addRect('mode', rectAt(2), byy, bw, 24 * S, () => cmdMode());
-  const canUp = nxt && G.gold[NET.me] >= nxt.cost && t.owner === NET.me;
+  const maxed = towerMaxed(t), rCost = maxed ? reinforceCost(t) : 0;
+  const canUp = t.owner === NET.me && (maxed ? G.gold[NET.me] >= rCost : (nxt && G.gold[NET.me] >= nxt.cost));
   panel(x, uR.x, uR.y, uR.w, uR.h, { r: 5, gold: canUp });
-  txt(x, nxt ? `YÜKSELT ${nxt.cost}` : 'MAKS', uR.x + uR.w / 2, uR.y + uR.h / 2, 9 * S, canUp ? '#ffd76a' : '#8a8578', 'center', 800);
+  txt(x, maxed ? `TAKVİYE ${rCost}` : nxt ? `YÜKSELT ${nxt.cost}` : 'MAKS',
+    uR.x + uR.w / 2, uR.y + uR.h / 2, 9 * S, canUp ? '#ffd76a' : '#8a8578', 'center', 800);
   panel(x, sR.x, sR.y, sR.w, sR.h, { r: 5 });
   txt(x, `SAT ${Math.round(t.invest * 0.72)}`, sR.x + sR.w / 2, sR.y + sR.h / 2, 9 * S, '#e0c9a0', 'center', 800);
   panel(x, mR.x, mR.y, mR.w, mR.h, { r: 5 });
@@ -4966,11 +5071,17 @@ function drawSpellIcon(x, i, cx, cy, r, ready) {
 function drawEndScreen(x, W, H, S) {
   x.save(); x.fillStyle = 'rgba(4,6,10,0.78)'; x.fillRect(0, 0, W, H);
   const won = G.phase === 'won';
-  txt(x, won ? 'KAPI TUTULDU' : 'KAPI DÜŞTÜ', W / 2, H / 2 - 60 * S, 40 * S, won ? '#ffd76a' : '#ff6a4a', 'center', 900);
-  txt(x, won ? `${WAVES.length} dalga geri püskürtüldü.` : `Dalga ${(WAVES[G.waveIdx] || { n: 30 }).n}'de düştün.`, W / 2, H / 2 - 18 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
-  txt(x, `Öldürülen ${G.killed} · Sızan ${G.leaked} · Puan ${G.score[NET.me] | 0}`, W / 2, H / 2 + 8 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
+  /* The shell adds a second row of buttons below the restart. At landscape
+     phone heights that pushed the stack onto the bottom HUD bar, so the whole
+     panel -- text included -- lifts by half the extra row and stays centred
+     either way. Shifting only the buttons put them through the stats line. */
+  const extraRow = Native.on ? Math.max(TOUCH_MIN, 40 * S) + 10 * S : 0;
+  const cy = H / 2 - extraRow / 2;
+  txt(x, won ? 'KAPI TUTULDU' : 'KAPI DÜŞTÜ', W / 2, cy - 60 * S, 40 * S, won ? '#ffd76a' : '#ff6a4a', 'center', 900);
+  txt(x, won ? `${WAVES.length} dalga geri püskürtüldü.` : `Dalga ${(WAVES[G.waveIdx] || { n: 30 }).n}'de düştün.`, W / 2, cy - 18 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
+  txt(x, `Öldürülen ${G.killed} · Sızan ${G.leaked} · Puan ${G.score[NET.me] | 0}`, W / 2, cy + 8 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
   const ebw = Math.max(180, 180 * S), ebh = Math.max(TOUCH_MIN + 4, 44 * S);
-  const r = addRect('again', W / 2 - ebw / 2, H / 2 + 34 * S, ebw, ebh, () => issue({ k: 'restart' }));
+  const r = addRect('again', W / 2 - ebw / 2, cy + 34 * S, ebw, ebh, () => issue({ k: 'restart' }));
   panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: true, r: 8 });
   txt(x, 'YENİDEN', r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#ffe08a', 'center', 800);
   /* Leaderboard and share, only inside the app shell -- in a browser there is
@@ -5068,6 +5179,10 @@ function applyCmd(c, who) {
     if (res.ok) { ev('sell', { x: t.x, y: t.y }); ev('sfx', { name: 'sell' }); NET.gridDirty = true; if (UI.sel === t) UI.sel = null; }
   } else if (c.k === 'mode') {
     const t = G.towers.find(t => t.id === c.id); if (t && t.owner === who) t.mode = (t.mode + 1) % 4;
+  } else if (c.k === 'reinforce') {
+    const t = G.towers.find(t => t.id === c.id); if (!t) return;
+    const res = reinforceTower(t, who);
+    if (res.ok) ev('sfx', { name: 'build' }); else if (who === NET.me) { UI.toast(res.why, '#ff9a8a'); Audio2.play('deny'); }
   } else if (c.k === 'branch') {
     const t = G.towers.find(t => t.id === c.id); if (!t) return;
     const res = branchTower(t, who, c.b);
@@ -5102,7 +5217,15 @@ function cmdSpeed(cycle, want) {
   if (v !== G.speed) { issue({ k: 'speed', v }); Audio2.play('ui'); }
 }
 function cmdStartWave() { issue({ k: 'start' }); }
-function cmdUpgrade() { if (UI.sel) issue({ k: 'upgrade', id: UI.sel.id }); }
+/* One button, two jobs. A maxed, branched tower's UPGRADE slot was dead --
+   it just read "MAKS" and did nothing. It now offers reinforcement instead,
+   which is where late-game gold goes, and costs no extra button in a layout
+   that is already tight on a phone. */
+function towerMaxed(t) { return t && t.lvl >= 2 && t.branch != null; }
+function cmdUpgrade() {
+  if (!UI.sel) return;
+  issue(towerMaxed(UI.sel) ? { k: 'reinforce', id: UI.sel.id } : { k: 'upgrade', id: UI.sel.id });
+}
 function cmdSell() { if (UI.sel) { issue({ k: 'sell', id: UI.sel.id }); UI.sel = null; } }
 function cmdMode() { if (UI.sel) issue({ k: 'mode', id: UI.sel.id }); }
 function cmdBranch(t, b) { if (t) issue({ k: 'branch', id: t.id, b }); }
@@ -5380,8 +5503,9 @@ function snapshot() {
   // their positions so applySnapshot's positional unpack below stays valid.
   // slot 13 (t.branch, Phase 2 item 2) is appended AFTER slot 12 for the same
   // reason -- -1 means unbranched (no branch chosen yet), 0/1 select
-  // TOWERS[kind].branch[0|1]. Never insert earlier; only ever append.
-  for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest, Math.round(t.acd * 20) / 20, t.branch == null ? -1 : t.branch]);
+  // TOWERS[kind].branch[0|1]. slot 14 (t.reinf, the repeatable reinforcement
+  // count) is appended after that. Never insert earlier; only ever append.
+  for (const t of G.towers) tw.push([t.id, KIDX.indexOf(t.kind), t.lvl, t.gx, t.gy, Math.round(t.angle * 100) / 100, t.owner, Math.round(t.recoil * 20) / 20, t.mode, t.kills, t.buildT | 0, t.invest, Math.round(t.acd * 20) / 20, t.branch == null ? -1 : t.branch, t.reinf | 0]);
   const pr = [];
   for (const p of G.projs) pr.push([['arrow', 'shell', 'shard', 'blob'].indexOf(p.kind), Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.ang * 100) / 100]);
   // Heroes (item 7) get their own top-level field rather than a slot appended
@@ -5442,6 +5566,7 @@ function applySnapshot(s) {
     t.recoil = a[7]; t.mode = a[8]; t.kills = a[9]; t.buildT = a[10]; t.invest = a[11];
     t.acd = a[12] || 0; // new slot (appended, see snapshot()) -- ability cooldown
     t.branch = (a[13] === undefined || a[13] === -1) ? null : a[13]; // appended slot 13 -- branch choice
+    t.reinf = a[14] | 0;                                             // appended slot 14 -- reinforcement count
     t.x = t.gx * TILE + TILE / 2; t.y = t.gy * TILE + TILE / 2; t.dmg = t.dmg || 0;
     return t;
   });
@@ -5856,11 +5981,26 @@ const NOPEER = 'Çevrimiçi kütüphaneye ulaşılamadı.<br><span style="opacit
    'ms' handling), so there is nothing for them to choose here. */
 let setupMode = 'solo';
 function openSetup(mode) {
+  refreshSetupRecord();
   setupMode = mode;
   $('setupTitle').textContent = mode === 'host' ? 'Oda Ayarları' : 'Oyun Ayarları';
   $('setupGo').textContent = mode === 'host' ? 'Oda Kur' : 'Başla';
   $('lobby').classList.add('hidden');
   $('setup').classList.remove('hidden');
+}
+/* Tells the player what this particular map+difficulty is worth before they
+   commit to twelve minutes of it: already cleared, or how far they got last
+   time. Without it the fifteen combinations were indistinguishable and there
+   was nothing to tick off. */
+function refreshSetupRecord() {
+  const el = $('setupRecord'); if (!el) return;
+  const r = runRecord(G.mapSeed, G.difficulty);
+  const p = campaignProgress();
+  let line;
+  if (r && r.won) line = '<span style="color:#8fe08a">✓ Bu haritayı bu zorlukta geçtin</span>';
+  else if (r && r.best) line = `En iyi: dalga ${r.best} / ${WAVES.length}`;
+  else line = 'Henüz denenmedi';
+  el.innerHTML = line + ` <span style="opacity:.55">· toplam ${p.cleared}/${p.total}</span>`;
 }
 function closeSetup() { $('setup').classList.add('hidden'); }
 function wireShell() {
@@ -5868,6 +6008,7 @@ function wireShell() {
     $(id).onclick = () => {
       G.difficulty = $(id).dataset.diff;
       ['diffEasy', 'diffNormal', 'diffHard'].forEach(x => $(x).classList.toggle('primary', x === id));
+      refreshSetupRecord();
     };
   });
   // A <select> dropdown rather than one button per map (there were 5, hand-
@@ -5876,7 +6017,13 @@ function wireShell() {
   // Only the host's pick matters (see the snapshot 'ms' field guests sync
   // against in applySnapshot); this element's change handler just sets
   // local state, same as the difficulty row.
-  const vl = $('verLine'); if (vl) vl.textContent = 'ALTAY v' + APP_VERSION + ' · ağ p' + NET_PROTOCOL;
+  // campaign progress on the main menu too, so it is visible without opening
+  // the setup screen -- it is the thing that says "there is more here"
+  const vl = $('verLine');
+  if (vl) {
+    const pr = campaignProgress();
+    vl.textContent = `${pr.cleared}/${pr.total} harita geçildi · ALTAY v${APP_VERSION}`;
+  }
   const mapSelect = $('mapSelect');
   MAPS.forEach(m => {
     const opt = document.createElement('option');
@@ -5888,7 +6035,7 @@ function wireShell() {
     if (m.seed === G.mapSeed) opt.selected = true;
     mapSelect.appendChild(opt);
   });
-  mapSelect.onchange = () => { G.mapSeed = Number(mapSelect.value); };
+  mapSelect.onchange = () => { G.mapSeed = Number(mapSelect.value); refreshSetupRecord(); };
   $('btnMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
   $('metaClose').onclick = () => $('meta').classList.add('hidden');
   $('btnSolo').onclick = () => openSetup('solo');

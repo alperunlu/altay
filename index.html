@@ -134,7 +134,9 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
       <button id="diffHard" data-diff="hard">Zor</button>
     </div>
     <div class="kicker" style="margin-bottom:6px">Harita</div>
-    <select id="mapSelect" style="margin-bottom:24px"></select>
+    <select id="mapSelect"></select>
+    <!-- What this map+difficulty is worth: cleared already, or how far you got -->
+    <div id="setupRecord" style="margin:8px 0 22px;font-size:12px;opacity:.72;min-height:16px"></div>
     <button class="primary" id="setupGo">Devam Et</button>
     <button class="ghost" id="setupBack">Geri</button>
   </div>
@@ -2306,9 +2308,31 @@ function loadMeta() {
   // undefined and localStorage is the only store.
   try {
     const raw = window.__altayMeta || JSON.parse(localStorage.getItem(META_KEY));
-    if (raw && typeof raw === 'object') return { currency: raw.currency | 0, lv: raw.lv || {} };
+    if (raw && typeof raw === 'object') return { currency: raw.currency | 0, lv: raw.lv || {}, runs: raw.runs || {} };
   } catch (e) { /* localStorage unavailable (private mode, quota, etc) -- fall back to a fresh profile */ }
-  return { currency: 0, lv: {} };
+  return { currency: 0, lv: {}, runs: {} };
+}
+/* Per map+difficulty record. The save used to hold nothing but currency and
+   upgrade levels, so there were fifteen map/difficulty combinations and no
+   trace anywhere of which ones you had beaten -- nothing to aim at and
+   nothing to tick off. `runs` is keyed "<mapSeed>:<difficulty>" and holds the
+   furthest wave reached and whether it was ever cleared. Old saves simply
+   have no `runs` key and start empty, so nothing needs migrating. */
+function runKey(seed, diff) { return (seed | 0) + ':' + diff; }
+function runRecord(seed, diff) { return (META.runs && META.runs[runKey(seed, diff)]) || null; }
+function recordRun(won, wave) {
+  if (G.endless) return;   // endless is a score chase, not a completion target
+  if (!META.runs) META.runs = {};
+  const k = runKey(G.mapSeed, G.difficulty);
+  const prev = META.runs[k] || { best: 0, won: 0 };
+  META.runs[k] = { best: Math.max(prev.best | 0, wave | 0), won: prev.won || won ? 1 : 0 };
+}
+/* How much of the campaign is finished, for the menu line. */
+function campaignProgress() {
+  let cleared = 0;
+  const diffs = Object.keys(DIFFICULTY);
+  for (const m of MAPS) for (const d of diffs) { const r = runRecord(m.seed, d); if (r && r.won) cleared++; }
+  return { cleared, total: MAPS.length * diffs.length };
 }
 function saveMeta() {
   try { localStorage.setItem(META_KEY, JSON.stringify(META)); } catch (e) { }
@@ -2332,7 +2356,9 @@ function metaDmgMult(owner) { return 1 + metaBonus(metaProfileFor(owner), 'dmg')
 function awardMetaCurrency(won) {
   const diffMult = { easy: 0.8, normal: 1, hard: 1.3 }[G.difficulty] || 1;
   const gained = Math.round((G.waveIdx * 4 + (won ? 40 : 0)) * diffMult);
-  META.currency += gained; saveMeta();
+  META.currency += gained;
+  recordRun(won, won ? WAVES.length : G.waveIdx + 1);
+  saveMeta();
   return gained;
 }
 /* Wave composition. Every entry is a list of [type,count] groups that spawn
@@ -5955,11 +5981,26 @@ const NOPEER = 'Çevrimiçi kütüphaneye ulaşılamadı.<br><span style="opacit
    'ms' handling), so there is nothing for them to choose here. */
 let setupMode = 'solo';
 function openSetup(mode) {
+  refreshSetupRecord();
   setupMode = mode;
   $('setupTitle').textContent = mode === 'host' ? 'Oda Ayarları' : 'Oyun Ayarları';
   $('setupGo').textContent = mode === 'host' ? 'Oda Kur' : 'Başla';
   $('lobby').classList.add('hidden');
   $('setup').classList.remove('hidden');
+}
+/* Tells the player what this particular map+difficulty is worth before they
+   commit to twelve minutes of it: already cleared, or how far they got last
+   time. Without it the fifteen combinations were indistinguishable and there
+   was nothing to tick off. */
+function refreshSetupRecord() {
+  const el = $('setupRecord'); if (!el) return;
+  const r = runRecord(G.mapSeed, G.difficulty);
+  const p = campaignProgress();
+  let line;
+  if (r && r.won) line = '<span style="color:#8fe08a">✓ Bu haritayı bu zorlukta geçtin</span>';
+  else if (r && r.best) line = `En iyi: dalga ${r.best} / ${WAVES.length}`;
+  else line = 'Henüz denenmedi';
+  el.innerHTML = line + ` <span style="opacity:.55">· toplam ${p.cleared}/${p.total}</span>`;
 }
 function closeSetup() { $('setup').classList.add('hidden'); }
 function wireShell() {
@@ -5967,6 +6008,7 @@ function wireShell() {
     $(id).onclick = () => {
       G.difficulty = $(id).dataset.diff;
       ['diffEasy', 'diffNormal', 'diffHard'].forEach(x => $(x).classList.toggle('primary', x === id));
+      refreshSetupRecord();
     };
   });
   // A <select> dropdown rather than one button per map (there were 5, hand-
@@ -5975,7 +6017,13 @@ function wireShell() {
   // Only the host's pick matters (see the snapshot 'ms' field guests sync
   // against in applySnapshot); this element's change handler just sets
   // local state, same as the difficulty row.
-  const vl = $('verLine'); if (vl) vl.textContent = 'ALTAY v' + APP_VERSION + ' · ağ p' + NET_PROTOCOL;
+  // campaign progress on the main menu too, so it is visible without opening
+  // the setup screen -- it is the thing that says "there is more here"
+  const vl = $('verLine');
+  if (vl) {
+    const pr = campaignProgress();
+    vl.textContent = `${pr.cleared}/${pr.total} harita geçildi · ALTAY v${APP_VERSION}`;
+  }
   const mapSelect = $('mapSelect');
   MAPS.forEach(m => {
     const opt = document.createElement('option');
@@ -5987,7 +6035,7 @@ function wireShell() {
     if (m.seed === G.mapSeed) opt.selected = true;
     mapSelect.appendChild(opt);
   });
-  mapSelect.onchange = () => { G.mapSeed = Number(mapSelect.value); };
+  mapSelect.onchange = () => { G.mapSeed = Number(mapSelect.value); refreshSetupRecord(); };
   $('btnMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
   $('metaClose').onclick = () => $('meta').classList.add('hidden');
   $('btnSolo').onclick = () => openSetup('solo');
