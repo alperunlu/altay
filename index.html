@@ -1226,6 +1226,141 @@ function bakeTerrain(grid) {
    ============================================================ */
 function dirVec(d) { const a = d * TAU / DIRS; return [Math.sin(a), Math.cos(a)]; }
 
+/* ---------- the hero ----------
+   Baked through its own path rather than bakeUnit/drawCreature, which every
+   enemy shares. Running the hero through the generic creature renderer is
+   exactly why it read as "one more creep in different colours": same chibi
+   proportions, same blank silhouette, nothing at the scale a player looks at.
+   What actually separates a hero at gameplay zoom is SILHOUETTE -- a crested
+   helm, a cape and a shield read instantly at 40px where surface detail does
+   not -- so those carry the design and the rendering leans on strong rim
+   light and a dark outline to keep them legible against grass and stone. */
+/* Deliberately dark. The sprite is ~44px tall in play, where VALUE contrast
+   carries the read and surface detail does not -- a first pass in bright
+   steel came out as a pale blur because rim light and the contrast boost had
+   nothing to lift it off. Deep blue steel with gold trim and crimson cloth
+   gives every element its own value band. */
+const HERO_PAL = {
+  steel: [96, 112, 142], steelDark: [44, 54, 74], steelLite: [156, 176, 206],
+  gold: [198, 146, 52], goldLite: [255, 214, 118],
+  cloth: [158, 38, 42], clothDark: [74, 18, 24],
+  skin: [196, 150, 112], leather: [62, 44, 30],
+  visor: [18, 20, 30]
+};
+function paintHero(x, def, d, f) {
+  const [fx, fy] = dirVec(d);
+  const back = fy < -0.35, front = fy > 0.35;
+  const side = Math.abs(fx);
+  const ph = f / FRAMES * TAU;
+  const swing = Math.sin(ph), bob = Math.cos(ph * 2) * def.s * 0.04;
+  const s = def.s, P = HERO_PAL;
+
+  x.save(); x.translate(0, -bob);
+
+  // ---- cape, behind everything, trailing opposite the facing ----
+  for (let i = 5; i >= 0; i--) {
+    const t = i / 5;
+    const sway = Math.sin(ph + i * 0.7) * s * 0.045 * (0.3 + t);
+    ell(x,
+      -fx * s * (0.10 + t * 0.20) + sway,
+      -s * 0.20 + t * s * 0.62,
+      s * (0.30 - t * 0.07), s * (0.17 + t * 0.05),
+      mixHex(P.cloth, P.clothDark, t * 0.8 + (back ? 0 : 0.2)));
+  }
+
+  // ---- legs ----
+  for (const sgn of [-1, 1]) {
+    const sw = swing * sgn;
+    const hipX = sgn * s * 0.105, kneeY = s * 0.32 + Math.abs(sw) * s * 0.03;
+    capsule(x, hipX, s * 0.12, hipX + sw * s * 0.16, kneeY, s * 0.075, s * 0.06, P.steelDark);
+    capsule(x, hipX + sw * s * 0.16, kneeY, hipX + sw * s * 0.26, s * 0.52, s * 0.06, s * 0.05, P.leather);
+    ell(x, hipX + sw * s * 0.28, s * 0.54, s * 0.085, s * 0.05, shade(P.leather, 0.8));
+  }
+
+  // ---- torso: plate over a tapered body ----
+  const chestY = -s * 0.10;
+  ell(x, 0, chestY + s * 0.12, s * 0.245, s * 0.23, P.steelDark);
+  ell(x, 0, chestY, s * 0.255, s * 0.235, P.steel);
+  ell(x, 0, chestY - s * 0.11, s * 0.13, s * 0.05, P.steel);       // collar highlight only
+  // gold chest band
+  x.save();
+  x.beginPath(); x.ellipse(0, chestY + s * 0.02, s * 0.235, s * 0.20, 0, 0, TAU); x.clip();
+  ell(x, 0, chestY + s * 0.055, s * 0.30, s * 0.045, P.gold);
+  x.restore();
+  if (!back) ell(x, -fx * s * 0.02, chestY - s * 0.05, s * 0.10, s * 0.075, P.goldLite);  // emblem
+
+  // ---- pauldrons: the widest points of the silhouette ----
+  for (const sgn of [-1, 1]) {
+    const px2 = sgn * s * 0.265 - fx * s * 0.02;
+    ell(x, px2, chestY - s * 0.05, s * 0.115, s * 0.095, P.steel);
+    ell(x, px2, chestY - s * 0.08, s * 0.088, s * 0.048, P.goldLite);
+  }
+
+  // ---- arms + gear. Shield on the off hand, sword on the lead hand ----
+  const shieldSide = fx >= 0 ? -1 : 1, swordSide = -shieldSide;
+  // shield arm
+  const shX = shieldSide * s * 0.30, shY = chestY + s * 0.14;
+  capsule(x, shieldSide * s * 0.24, chestY, shX, shY, s * 0.065, s * 0.055, P.steelDark);
+  if (!back) {
+    const bx = shX + shieldSide * s * 0.06;
+    ell(x, bx, shY, s * 0.190, s * 0.228, P.gold, shieldSide * 0.18);        // rim
+    ell(x, bx, shY, s * 0.152, s * 0.190, P.cloth, shieldSide * 0.18);       // face
+    ell(x, bx, shY, s * 0.072, s * 0.090, P.steelLite, shieldSide * 0.18);   // boss
+    ell(x, bx, shY, s * 0.040, s * 0.050, P.goldLite);
+  }
+  // sword arm, swinging with the gait
+  const swX = swordSide * s * (0.26 + swing * 0.05), swY = chestY + s * (0.14 - swing * 0.04);
+  capsule(x, swordSide * s * 0.22, chestY, swX, swY, s * 0.062, s * 0.052, P.steelDark);
+  if (!back) {
+    const ang = swordSide * (0.5 + swing * 0.22);
+    x.save(); x.translate(swX, swY); x.rotate(ang);
+    capsule(x, 0, 0, 0, -s * 0.16, s * 0.035, s * 0.03, P.leather);      // grip
+    ell(x, 0, -s * 0.17, s * 0.10, s * 0.030, P.gold);                    // crossguard
+    capsule(x, 0, -s * 0.19, 0, -s * 0.74, s * 0.058, s * 0.012, P.steelLite); // blade
+    x.restore();
+  }
+
+  // ---- head + crested helm: the single strongest read at small size ----
+  const hr = s * def.head * 1.42;
+  const headY = chestY - s * 0.38 - hr * 0.52;
+  const headX = fx * s * 0.05;
+  ell(x, headX, headY, hr * 0.92, hr * 0.98, shade(P.skin, 0.85));
+  ell(x, headX, headY - hr * 0.22, hr * 0.92, hr * 0.80, P.steelDark);    // helm dome
+  ell(x, headX - fx * hr * 0.14, headY - hr * 0.40, hr * 0.58, hr * 0.34, P.steel);  // lit crown
+  ell(x, headX, headY - hr * 0.02, hr * 0.96, hr * 0.20, P.gold);         // brow band
+  if (!back) {
+    ell(x, headX, headY + hr * 0.20, hr * 0.74, hr * 0.20, P.visor);           // narrow visor slot
+    for (const sgn of [-1, 1]) ell(x, headX + sgn * hr * 0.28, headY + hr * 0.19, hr * 0.11, hr * 0.075, P.goldLite);
+    ell(x, headX, headY + hr * 0.52, hr * 0.34, hr * 0.15, shade(P.skin, 0.80)); // jaw below the visor
+  }
+  // plume, swaying with the stride
+  for (let i = 0; i < 7; i++) {
+    const t = i / 7;
+    ell(x,
+      headX - fx * hr * (0.05 + t * 0.95) + Math.sin(ph + i * 0.8) * hr * 0.07,
+      headY - hr * (1.28 - t * 0.62),
+      hr * (0.34 - t * 0.04), hr * (0.26 - t * 0.03),
+      mixHex(P.cloth, P.clothDark, 0.15 + t * 0.7));
+  }
+  x.restore();
+}
+function bakeHero(def) {
+  const S = def.px, sheets = [];
+  for (let d = 0; d < DIRS; d++) {
+    const row = [];
+    for (let fr = 0; fr < FRAMES; fr++) {
+      const { c, x } = makeCanvas(S, S);
+      x.translate(S / 2, S * 0.60);
+      paintHero(x, def, d, fr);
+      outlineSprite(c, 'rgba(6,4,9,0.97)', 2.1);
+      rimLight(c, LIGHT.x * 2.2, LIGHT.y * 2.2, 'rgba(255,246,214,1)', 0.72);
+      lightPass(c, 0.18, 0.15, null);
+      row.push(boostContrast(c, 1.18, 1.10, 1.0));
+    }
+    sheets.push(row);
+  }
+  return sheets;
+}
 function bakeUnit(def) {
   const S = def.px, sheets = [];
   for (let d = 0; d < DIRS; d++) {
@@ -2926,7 +3061,14 @@ const HERO_DEF = {
 const HERO_STATS = {
   hp: 420, dmg: 42, range: 70, atkRate: 0.55, contactDmg: 6, contactRadius: 30,
   maxLevel: 10, hpPerLevel: 52, dmgPerLevel: 0.34, atkRatePerLevel: 0.012,
-  contactPerWave: 0.09, respawnSec: 18
+  contactPerWave: 0.09, respawnSec: 18,
+  blockRadius: 46, blockCap: 3, blockDps: 5,
+  /* Out-of-combat regeneration is what turns blocking into a decision rather
+     than a death sentence. Without it the hero holds a few enemies, dies, and
+     spends 18s absent -- measured, that alone dropped hard mode from 2/5 maps
+     cleared to 0/5. With it the loop is: plug the gap, take the hits, pull
+     back before it costs you the hero, heal, go again. */
+  regenDelay: 3.5, regenPerSec: 0.055
 };
 // XP to go from `lv` to `lv+1`. Cumulative to level 10 is ~5,800, against the
 // ~52,000 total bounty a full run puts on the board.
@@ -2943,7 +3085,7 @@ function spawnHero(owner) {
   const p = heroSpawnPoint(owner);
   return {
     owner, x: p.x, y: p.y, tx: p.x, ty: p.y, vx: 0, vy: 0, dir: 4, frame: 0, anim: 0,
-    hp: HERO_STATS.hp, maxHp: HERO_STATS.hp, level: 1, kills: 0, xp: 0, cd: 0, dead: false, respawnT: 0, hitFlash: 0
+    hp: HERO_STATS.hp, maxHp: HERO_STATS.hp, level: 1, kills: 0, xp: 0, cd: 0, dead: false, respawnT: 0, hitFlash: 0, blockCount: 0, calmT: 0
   };
 }
 /* How full the hero's XP bar is, 0..1. A guest never runs updateHeroes (the
@@ -2953,6 +3095,24 @@ function heroXpFrac(h) {
   if (h.level >= HERO_STATS.maxLevel) return 1;
   if (NET.active && !NET.isHost) return h.xpFrac || 0;
   return clamp(h.xp / heroXpFor(h.level), 0, 1);
+}
+/* Blocking. Until now updateCreeps never once mentioned the hero -- enemies
+   walked straight through it, which is precisely why it read as a walking
+   turret rather than a unit. A ground creep inside HERO_STATS.blockRadius of
+   a living hero now stops advancing and fights it, and is released the moment
+   the hero dies or moves away. This is the mechanic that makes positioning
+   matter: the hero plugs a gap and buys time, at the cost of taking hits.
+   Air units ignore it, as they ignore the maze itself.
+   `blockCap` exists because without it a single hero parked in a chokepoint
+   would hold an entire wave forever; past the cap the surplus walks by. */
+function heroBlocking(c) {
+  if (c.air || c.dead) return null;
+  for (const h of G.heroes) {
+    if (!h || h.dead) continue;
+    if (h.blockCount >= HERO_STATS.blockCap) continue;
+    if (dist2(c.x, c.y, h.x, h.y) < HERO_STATS.blockRadius * HERO_STATS.blockRadius) return h;
+  }
+  return null;
 }
 function heroDmg(h) { return HERO_STATS.dmg * (1 + (h.level - 1) * HERO_STATS.dmgPerLevel); }
 function heroMaxHp(h) { return HERO_STATS.hp + (h.level - 1) * HERO_STATS.hpPerLevel; }
@@ -3027,7 +3187,12 @@ function updateHeroes(dt) {
     let dmgTaken = 0;
     for (const c of G.creeps) {
       if (c.dead || c.air) continue;
+      if (c.heldBy === h.owner) continue;   // already hitting us through the block exchange
       if (dist2(h.x, h.y, c.x, c.y) < HERO_STATS.contactRadius * HERO_STATS.contactRadius) dmgTaken += contact * dt;
+    }
+    if (dmgTaken > 0) h.calmT = 0; else h.calmT += dt;
+    if (h.calmT >= HERO_STATS.regenDelay && h.hp < h.maxHp) {
+      h.hp = Math.min(h.maxHp, h.hp + h.maxHp * HERO_STATS.regenPerSec * dt);
     }
     if (dmgTaken > 0) {
       h.hp -= dmgTaken; h.hitFlash = 0.16;
@@ -3070,6 +3235,7 @@ function simTick() {
     }
   }
 
+  for (const h of G.heroes) if (h) h.blockCount = 0;   // recounted every tick by heroBlocking
   updateCreeps(dt);
   updateCreepAbilities(dt);
   updateTowers(dt);
@@ -3142,6 +3308,28 @@ function updateCreeps(dt) {
     }
     if (c.slowT > 0) { c.slowT -= dt; if (c.slowT <= 0) c.slow = 0; }
 
+    /* Held by a hero: stop advancing and trade blows instead. Kept here, at
+       the top of movement, so a blocked creep skips pathing entirely rather
+       than being nudged back every frame by the separation pass. */
+    const holder = heroBlocking(c);
+    c.heldBy = holder ? holder.owner : -1;
+    if (holder) {
+      holder.blockCount++;
+      c.vx = lerp(c.vx, 0, 0.35); c.vy = lerp(c.vy, 0, 0.35);
+      c.x += c.vx * dt; c.y += c.vy * dt;
+      c.atkT = (c.atkT || 0) - dt;
+      if (c.atkT <= 0) {
+        c.atkT = 0.9;
+        holder.hp -= HERO_STATS.blockDps * (1 + G.waveIdx * HERO_STATS.contactPerWave);
+        holder.hitFlash = 0.16; holder.calmT = 0;
+        ev('heroHit', { x: holder.x, y: holder.y, owner: holder.owner });
+        if (holder.hp <= 0) {
+          holder.hp = 0; holder.dead = true; holder.respawnT = HERO_STATS.respawnSec;
+          ev('heroDown', { x: holder.x, y: holder.y, owner: holder.owner });
+        }
+      }
+      continue;
+    }
     const spd = c.speed * (1 - c.slow);
     let tx, ty;
     if (c.air) { tx = G.exit.gx * TILE + TILE / 2; ty = G.exit.gy * TILE + TILE / 2; }
@@ -5867,7 +6055,7 @@ function bootstrap() {
   // hero (item 7) is NOT part of CREEPS -- it isn't an enemy, and CIDX
   // (Object.keys(CREEPS)) is the wire-order contract for enemy types, so
   // it gets its own sprite slot instead of polluting that index space.
-  jobs.push({ label: HERO_DEF.name, fn: () => { R.sprites.hero = bakeUnit(HERO_DEF); } });
+  jobs.push({ label: HERO_DEF.name, fn: () => { R.sprites.hero = bakeHero(HERO_DEF); } });
   for (const k in TOWERS) for (let l = 0; l < 3; l++) jobs.push({ label: TOWERS[k].names[l], fn: () => { R.sprites.towers[k + l] = bakeTower(k, l); } });
   // branch sprites (Phase 2, item 2): reuse lv2 geometry (see bakeTower), so
   // this is 10 more bakes of the SAME per-tower cost as the lv2 job above,
