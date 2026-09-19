@@ -9,6 +9,7 @@ import { Share } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as GameServices from 'react-native-game-services';
+import * as Updates from 'expo-updates';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -20,6 +21,33 @@ const GAME = require('./assets/game/index.html');
    native side keeps the authoritative copy in a real file and hands it to
    the page before load. */
 const META_FILE = FileSystem.documentDirectory + 'altay-meta.json';
+
+/* OTA. expo-updates' default is to download in the background and apply on the
+   NEXT launch, which would mean telling a player to close and reopen twice
+   before co-op stops reporting a version mismatch. Instead this checks while
+   the splash is already up for the art bake, and if an update is genuinely
+   waiting it fetches and reloads there and then -- one restart, as the
+   in-game message promises. A missing or slow update server must never hold
+   the game hostage, so the whole thing is bounded and every failure path just
+   plays the build already installed. */
+const UPDATE_CHECK_MS = 3000;
+const UPDATE_FETCH_MS = 12000;
+const withTimeout = (promise, ms) =>
+  Promise.race([promise, new Promise((res) => setTimeout(() => res('__timeout'), ms))]);
+
+async function applyPendingUpdate() {
+  if (__DEV__ || !Updates.isEnabled) return false;
+  try {
+    const check = await withTimeout(Updates.checkForUpdateAsync(), UPDATE_CHECK_MS);
+    if (check === '__timeout' || !check || !check.isAvailable) return false;
+    const fetched = await withTimeout(Updates.fetchUpdateAsync(), UPDATE_FETCH_MS);
+    if (fetched === '__timeout' || !fetched || !fetched.isNew) return false;
+    await Updates.reloadAsync();   // does not return: the app restarts here
+    return true;
+  } catch (e) {
+    return false;                  // offline, no server configured, anything
+  }
+}
 
 /* Game Center leaderboards, one per difficulty so a hard-mode run is not
    ranked against an easy one. These IDs must match what is created in App
@@ -112,7 +140,12 @@ export default function App() {
       // downloadAsync resolves the bundled asset to a real on-device file://
       // path; without it localUri is null on a production build.
       const asset = Asset.fromModule(GAME);
-      const [, stored] = await Promise.all([asset.downloadAsync(), readMeta()]);
+      // Run the update check alongside the asset load rather than before it,
+      // so on the common path (no update) it costs nothing the splash was not
+      // already spending.
+      const [, , stored] = await Promise.all([
+        applyPendingUpdate(), asset.downloadAsync(), readMeta()
+      ]);
       if (!alive) return;
       setMeta(stored);
       setUri(asset.localUri || asset.uri);

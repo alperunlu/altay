@@ -46,6 +46,13 @@ npx eas submit --platform ios --profile production --latest
 `eas submit` build kredisi harcamaz; TestFlight'a giden binary ile incelemeye
 gönderilen aynıdır, test sonrası yeniden build gerekmez.
 
+## OTA güncelleme
+
+`expo-updates` kurulu ve yapılandırılmış. Oyun asset olarak gömülü olduğu
+için `index.html` değişiklikleri App Store incelemesi olmadan gönderilebilir:
+`npm run sync-game && npx eas update --branch production`.
+Ayrıntı ve uyarılar: `../store/ota.md`.
+
 ## Game Center
 
 Kurulum ve leaderboard ID'leri: `../store/game-center.md`.

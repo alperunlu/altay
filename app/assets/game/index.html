@@ -5787,7 +5787,7 @@ function netJoin(code) {
         settled = true; NET.active = false;
         lobbyMsg(d.why === 'full' || d.t === 'full'
           ? 'Oda dolu (en fazla ' + MAX_PLAYERS + ' oyuncu).'
-          : VERSION_MISMATCH);
+          : versionMismatchMsg());
       }
     });
     conn.on('error', () => { if (!settled) lobbyMsg('Odaya ulaşılamadı. Kodu kontrol et.'); });
@@ -5796,7 +5796,7 @@ function netJoin(code) {
       // The link opened but nothing came back: either the room does not exist,
       // or the HOST is on a build too old to answer `hi`. Say both -- from
       // this side the two are indistinguishable.
-      lobbyMsg(NET.conns[0] && NET.conns[0].open ? VERSION_MISMATCH : 'Odaya ulaşılamadı. Kodu kontrol et.');
+      lobbyMsg(NET.conns[0] && NET.conns[0].open ? versionMismatchMsg() : 'Odaya ulaşılamadı. Kodu kontrol et.');
     }, 6500);
   });
   p.on('error', e => lobbyMsg(netErr(e && e.type)));
@@ -5961,11 +5961,21 @@ function renderMetaTree() {
 <script>
 let peerLoading = null;
 function ensurePeer() { return Promise.resolve(!!window.Peer); }
-const VERSION_MISMATCH =
-  'Sürümler uyuşmuyor.' +
-  '<br><span style="opacity:.75">Sen ve arkadaşın oyunun farklı sürümlerini çalıştırıyorsunuz, birlikte oynayamazsınız.<br>' +
-  '<b>İkiniz de sayfayı yenileyin</b> (uygulamada: kapatıp açın), sonra tekrar deneyin.<br>' +
-  'Sendeki sürüm: <b>' + APP_VERSION + '</b> (ağ protokolü ' + NET_PROTOCOL + ')</span>';
+/* A function, not a constant: the instruction differs by where the game is
+   running, and "refresh the page" is meaningless to someone holding a phone
+   app -- there is no page and no refresh. In the shell an update arrives
+   through expo-updates and lands on the next launch, so the honest action is
+   to close the app fully and reopen it. */
+function versionMismatchMsg() {
+  const how = Native.on
+    ? '<b>İkiniz de uygulamayı tamamen kapatıp yeniden açın.</b>' +
+      '<br>Güncelleme açılışta kendiliğinden iner ve uygulanır.'
+    : '<b>İkiniz de sayfayı yenileyin</b> (Ctrl/Cmd + R).';
+  return 'Sürümler uyuşmuyor.' +
+    '<br><span style="opacity:.75">Sen ve arkadaşın oyunun farklı sürümlerini çalıştırıyorsunuz, ' +
+    'birlikte oynayamazsınız.<br>' + how + '<br>' +
+    'Sendeki sürüm: <b>' + APP_VERSION + '</b> (ağ protokolü ' + NET_PROTOCOL + ')</span>';
+}
 const INSECURE = 'Tarayıcı çevrimiçi modu engelledi (<b>güvenli bağlam değil</b>).' +
   '<br><span style="opacity:.75">WebRTC sadece <b>https://</b> ya da <b>localhost</b> üzerinden çalışır — dosyayı doğrudan diskten (file://) açtığın için kapalı.<br>' +
   'Çözüm: dosyanın olduğu klasörde <code>python3 -m http.server 8000</code> çalıştırıp <code>http://localhost:8000</code> adresinden aç. ' +

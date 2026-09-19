@@ -47,6 +47,14 @@
       "eas": {
         "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
       }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/REPLACE_WITH_EAS_PROJECT_ID",
+      "fallbackToCacheTimeout": 0,
+      "checkAutomatically": "ON_LOAD"
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
     }
   }
 }
