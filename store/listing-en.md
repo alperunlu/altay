@@ -50,8 +50,8 @@ their own hero and their own towers. No server, no account, no sign-up.
 
 FIVE MAPS, THREE DIFFICULTIES
 From the open grassland of Otuken Plain to the rubble field of Stone
-Valley. Each map wants a different defense, and the picker tells you how
-hard each one is before you commit.
+Valley. Each map wants a different defense, and which one will test you is
+something you find out by playing it.
 
 PERMANENT PROGRESSION
 Every run earns Glory, which buys permanent upgrades between runs: more

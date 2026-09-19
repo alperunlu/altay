@@ -53,8 +53,8 @@ kahramanı, kendi kuleleri var. Sunucu yok, hesap yok, kayıt yok.
 
 BEŞ HARİTA, ÜÇ ZORLUK
 Ötüken Ovası'nın açık bozkırından Taş Vadi'nin moloz tarlasına. Her
-harita farklı bir savunma istiyor ve seçerken hangisinin ne kadar zor
-olduğunu görüyorsun.
+harita farklı bir savunma istiyor ve hangisinin seni ne kadar zorlayacağını
+oynayarak öğreniyorsun.
 
 KALICI İLERLEME
 Her koşu Şan kazandırır. Şan, koşular arası kalıcı yükseltmelere gider:
