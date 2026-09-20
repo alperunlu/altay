@@ -1233,117 +1233,300 @@ function dirVec(d) { const a = d * TAU / DIRS; return [Math.sin(a), Math.cos(a)]
    exactly why it read as "one more creep in different colours": same chibi
    proportions, same blank silhouette, nothing at the scale a player looks at.
    What actually separates a hero at gameplay zoom is SILHOUETTE -- a crested
-   helm, a cape and a shield read instantly at 40px where surface detail does
-   not -- so those carry the design and the rendering leans on strong rim
-   light and a dark outline to keep them legible against grass and stone. */
-/* Deliberately dark. The sprite is ~44px tall in play, where VALUE contrast
+   helm, a cape and a shield read instantly at 56px where surface detail does
+   not -- so those carry the design, and the post-process stays light because
+   every plate is already lit by its own gradient. */
+/* Deliberately dark. The sprite is ~56px tall in play, where VALUE contrast
    carries the read and surface detail does not -- a first pass in bright
    steel came out as a pale blur because rim light and the contrast boost had
    nothing to lift it off. Deep blue steel with gold trim and crimson cloth
    gives every element its own value band. */
 const HERO_PAL = {
-  steel: [96, 112, 142], steelDark: [44, 54, 74], steelLite: [156, 176, 206],
-  gold: [198, 146, 52], goldLite: [255, 214, 118],
-  cloth: [158, 38, 42], clothDark: [74, 18, 24],
-  skin: [196, 150, 112], leather: [62, 44, 30],
-  visor: [18, 20, 30]
+  steel: [78, 96, 130], steelMid: [54, 68, 96], steelDark: [26, 33, 50], steelLite: [158, 182, 216],
+  gold: [198, 150, 52], goldLite: [255, 222, 132], goldDark: [116, 80, 24],
+  cloth: [168, 40, 44], clothDark: [72, 16, 22], clothLite: [214, 76, 64],
+  skin: [206, 162, 120], skinDark: [138, 96, 66],
+  leather: [64, 42, 26], leatherLite: [96, 66, 38], boot: [48, 32, 20],
+  blade: [208, 222, 240], bladeDark: [112, 132, 162],
+  visor: [10, 12, 20]
 };
+/* Flat fill, no sculpting gradient. poly()/ell() light every shape from its
+   own centre, which is right for a rounded mass and wrong for a thin trim
+   line or a flat plate -- a 3px gold band lit that way turns into a grey
+   smear. Trim, slits and accents use this instead. */
+function polyFlat(x, pts, col, a) {
+  x.save(); if (a !== undefined) x.globalAlpha = a;
+  x.beginPath(); pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1]));
+  x.closePath(); x.fillStyle = rgb(col[0], col[1], col[2]); x.fill(); x.restore();
+}
+/* The hero, drawn as PATHS rather than stacked ellipses.
+   The first version of this was ellipses all the way down, and at size it
+   read as a snowman: a ball head on an egg torso with lumps for shoulders,
+   because an ellipse has no corners and armour is nothing but corners. It
+   also used heroic-realistic proportions (small head, long body), which is
+   backwards for a 50px sprite -- the head is the only part that carries
+   identity, so it has to be big.
+   Proportions here are the genre's: ~3.5 heads tall, shoulders 0.6x the
+   figure height, short thick legs, an oversized sword. Everything is
+   measured off ONE ground line and ONE height H, so changing H rescales the
+   whole figure without any part drifting. */
 function paintHero(x, def, d, f) {
   const [fx, fy] = dirVec(d);
-  const back = fy < -0.35, front = fy > 0.35;
-  const side = Math.abs(fx);
+  const back = fy < -0.35;
+  const side = Math.abs(fx);                    // 0 = dead on/away, 1 = pure profile
   const ph = f / FRAMES * TAU;
-  const swing = Math.sin(ph), bob = Math.cos(ph * 2) * def.s * 0.04;
-  const s = def.s, P = HERO_PAL;
+  const swing = Math.sin(ph), bob = Math.cos(ph * 2) * 1.0;
+  const P = HERO_PAL;
+  const H = def.s * 1.27;                       // figure height, skull top to sole
+  const y0 = 2 - bob;                           // sole line, in the sprite's own space
+  const Y = k => y0 - H * k;                    // k = fraction of H above the soles
+  const yAnkle = Y(0.06), yKnee = Y(0.25), yHip = Y(0.40), yBelt = Y(0.455),
+        yChest = Y(0.60), yShld = Y(0.715), yChin = Y(0.745);
+  const SH = H * 0.30;                          // half shoulder width
+  const hw = H * 0.158, hh = H * 0.150;         // helm half-width / half-height
+  const hx = fx * H * 0.03, hy = Y(0.875);      // helm centre
 
-  x.save(); x.translate(0, -bob);
-
-  // ---- cape, behind everything, trailing opposite the facing ----
-  for (let i = 5; i >= 0; i--) {
-    const t = i / 5;
-    const sway = Math.sin(ph + i * 0.7) * s * 0.045 * (0.3 + t);
-    ell(x,
-      -fx * s * (0.10 + t * 0.20) + sway,
-      -s * 0.20 + t * s * 0.62,
-      s * (0.30 - t * 0.07), s * (0.17 + t * 0.05),
-      mixHex(P.cloth, P.clothDark, t * 0.8 + (back ? 0 : 0.2)));
+  /* ---- cape, behind everything ----------------------------------------
+     One angular sheet pinned at the pauldrons, NOT a fan of ellipses: the
+     fan version splayed out below the hip and read as a ball gown. It stops
+     above the knee so the legs stay visible and the silhouette keeps legs. */
+  {
+    /* Swept to ONE side and cut off above the knee. Hung symmetrically it
+       filled the gap between the legs and the whole figure read as a robe
+       with two boots poking out -- a cape has to stay OUT of the leg gap or
+       it stops being a cape. `sw` is which way it trails: opposite the
+       facing on a profile, and to the left when facing the camera dead on. */
+    const swp = (fx > 0.15 ? -1 : fx < -0.15 ? 1 : -1);
+    const sway = Math.sin(ph) * H * 0.015;
+    const top = SH * 0.86, hem = Y(0.30);
+    if (back) {
+      /* Facing away, the cape is the whole read -- it should SHEET down the
+         back, not sweep off one hip, or the back views are a bare blue torso
+         with a bit of red beside it. */
+      const w = SH * 1.06, hb = Y(0.22);
+      poly(x, [
+        [-top, yShld - H * 0.04], [top, yShld - H * 0.04],
+        [w + sway, Y(0.46)], [w * 0.94 + sway, hb + H * 0.03],
+        [w * 0.46 + sway, hb + H * 0.06], [sway, hb],
+        [-w * 0.44 + sway, hb + H * 0.06], [-w * 0.92 + sway, hb + H * 0.02],
+        [-w, Y(0.46)]
+      ], P.cloth);
+      for (const sgn of [-1, 1]) {
+        polyFlat(x, [[sgn * top * 0.30, yShld], [sgn * top * 0.52, yShld],
+                     [sgn * w * 0.72 + sway, hb + H * 0.04], [sgn * w * 0.44 + sway, hb + H * 0.05]],
+                 P.clothDark, 0.45);
+      }
+    } else {
+      const cx = swp * H * 0.05 + sway;
+      poly(x, [
+        [-top, yShld - H * 0.035], [top, yShld - H * 0.035],
+        [cx + swp * SH * 1.22, Y(0.50)],
+        [cx + swp * SH * 1.34, hem + H * 0.04],
+        [cx + swp * SH * 0.86, hem],
+        [cx + swp * SH * 0.34, hem + H * 0.05],
+        [cx - swp * SH * 0.30, hem + H * 0.02],
+        [cx - swp * SH * 0.74, Y(0.46)]
+      ], P.clothDark);
+      polyFlat(x, [
+        [cx + swp * top * 0.10, yShld], [cx + swp * top * 0.42, yShld],
+        [cx + swp * SH * 0.96, hem + H * 0.03], [cx + swp * SH * 0.56, hem + H * 0.02]
+      ], P.clothDark, 0.7);
+    }
   }
 
-  // ---- legs ----
+  /* ---- legs: short, armoured, planted ---------------------------------- */
   for (const sgn of [-1, 1]) {
-    const sw = swing * sgn;
-    const hipX = sgn * s * 0.105, kneeY = s * 0.32 + Math.abs(sw) * s * 0.03;
-    capsule(x, hipX, s * 0.12, hipX + sw * s * 0.16, kneeY, s * 0.075, s * 0.06, P.steelDark);
-    capsule(x, hipX + sw * s * 0.16, kneeY, hipX + sw * s * 0.26, s * 0.52, s * 0.06, s * 0.05, P.leather);
-    ell(x, hipX + sw * s * 0.28, s * 0.54, s * 0.085, s * 0.05, shade(P.leather, 0.8));
+    const near = sgn * fx >= 0;                  // leg on the camera-facing side
+    const step = swing * sgn * H * 0.085;
+    const hipX = sgn * H * 0.10 + fx * H * 0.01;
+    const kx = hipX + step, ax = hipX + step * 1.45;
+    const dim = near ? 1 : 0.72;
+    poly(x, [[hipX - H * 0.062, yHip], [hipX + H * 0.062, yHip],
+             [kx + H * 0.050, yKnee], [kx - H * 0.050, yKnee]], shade(P.steelMid, dim));
+    poly(x, [[kx - H * 0.048, yKnee], [kx + H * 0.048, yKnee],
+             [ax + H * 0.042, yAnkle], [ax - H * 0.042, yAnkle]], shade(P.leather, dim));
+    // knee cop: the small bright plate that tells you the legs are armoured
+    polyFlat(x, [[kx - H * 0.052, yKnee + H * 0.022], [kx + H * 0.052, yKnee + H * 0.022],
+                 [kx + H * 0.042, yKnee - H * 0.028], [kx - H * 0.042, yKnee - H * 0.028]],
+             shade(P.steelLite, dim * 0.92));
+    // boot, splayed toward the camera so the figure looks planted
+    poly(x, [[ax - H * 0.050, yAnkle], [ax + H * 0.050, yAnkle],
+             [ax + H * 0.062 + fx * H * 0.02, y0], [ax - H * 0.058 + fx * H * 0.02, y0]],
+         shade(P.boot, dim));
   }
 
-  // ---- torso: plate over a tapered body ----
-  const chestY = -s * 0.10;
-  ell(x, 0, chestY + s * 0.12, s * 0.245, s * 0.23, P.steelDark);
-  ell(x, 0, chestY, s * 0.255, s * 0.235, P.steel);
-  ell(x, 0, chestY - s * 0.11, s * 0.13, s * 0.05, P.steel);       // collar highlight only
-  // gold chest band
-  x.save();
-  x.beginPath(); x.ellipse(0, chestY + s * 0.02, s * 0.235, s * 0.20, 0, 0, TAU); x.clip();
-  ell(x, 0, chestY + s * 0.055, s * 0.30, s * 0.045, P.gold);
-  x.restore();
-  if (!back) ell(x, -fx * s * 0.02, chestY - s * 0.05, s * 0.10, s * 0.075, P.goldLite);  // emblem
-
-  // ---- pauldrons: the widest points of the silhouette ----
-  for (const sgn of [-1, 1]) {
-    const px2 = sgn * s * 0.265 - fx * s * 0.02;
-    ell(x, px2, chestY - s * 0.05, s * 0.115, s * 0.095, P.steel);
-    ell(x, px2, chestY - s * 0.08, s * 0.088, s * 0.048, P.goldLite);
+  /* ---- tassets: three plates hanging off the belt over the thighs ------- */
+  for (const k of [-1, 0, 1]) {
+    const tx = k * H * 0.105 + fx * H * 0.01;
+    polyFlat(x, [[tx - H * 0.090, yBelt - H * 0.015], [tx + H * 0.090, yBelt - H * 0.015],
+                 [tx + H * 0.074, Y(0.315)], [tx - H * 0.074, Y(0.315)]], P.steelDark);
+    poly(x, [[tx - H * 0.078, yBelt - H * 0.01], [tx + H * 0.078, yBelt - H * 0.01],
+             [tx + H * 0.062, Y(0.325)], [tx - H * 0.062, Y(0.325)]],
+         k === 0 ? P.steel : P.steelMid);
   }
 
-  // ---- arms + gear. Shield on the off hand, sword on the lead hand ----
-  const shieldSide = fx >= 0 ? -1 : 1, swordSide = -shieldSide;
-  // shield arm
-  const shX = shieldSide * s * 0.30, shY = chestY + s * 0.14;
-  capsule(x, shieldSide * s * 0.24, chestY, shX, shY, s * 0.065, s * 0.055, P.steelDark);
+  /* ---- torso: a tapered cuirass, wide at the shoulders ------------------ */
+  poly(x, [
+    [-SH * 0.93, yShld - H * 0.015], [SH * 0.93, yShld - H * 0.015],
+    [SH * 0.80, yChest], [SH * 0.52, yBelt], [-SH * 0.52, yBelt], [-SH * 0.80, yChest]
+  ], P.steel);
+  // under-pectoral shadow: separates chest from belly without a drawn line
+  polyFlat(x, [[-SH * 0.78, yChest + H * 0.01], [SH * 0.78, yChest + H * 0.01],
+               [SH * 0.52, yBelt], [-SH * 0.52, yBelt]], P.steelDark, 0.34);
+  // gold gorget V
+  polyFlat(x, [[-SH * 0.60, yShld - H * 0.018], [SH * 0.60, yShld - H * 0.018],
+               [SH * 0.42, yShld + H * 0.035], [0, yChest - H * 0.005],
+               [-SH * 0.42, yShld + H * 0.035]], P.gold);
+  // belt
+  polyFlat(x, [[-SH * 0.56, yBelt - H * 0.035], [SH * 0.56, yBelt - H * 0.035],
+               [SH * 0.54, yBelt], [-SH * 0.54, yBelt]], P.goldDark);
+  polyFlat(x, [[-SH * 0.56, yBelt - H * 0.035], [SH * 0.56, yBelt - H * 0.035],
+               [SH * 0.55, yBelt - H * 0.018], [-SH * 0.55, yBelt - H * 0.018]], P.gold);
   if (!back) {
-    const bx = shX + shieldSide * s * 0.06;
-    ell(x, bx, shY, s * 0.190, s * 0.228, P.gold, shieldSide * 0.18);        // rim
-    ell(x, bx, shY, s * 0.152, s * 0.190, P.cloth, shieldSide * 0.18);       // face
-    ell(x, bx, shY, s * 0.072, s * 0.090, P.steelLite, shieldSide * 0.18);   // boss
-    ell(x, bx, shY, s * 0.040, s * 0.050, P.goldLite);
+    // sun emblem
+    ell(x, -fx * H * 0.01, yChest - H * 0.03, H * 0.055, H * 0.055, P.goldLite);
+    polyFlat(x, [[-H * 0.012, yChest - H * 0.10], [H * 0.012, yChest - H * 0.10],
+                 [H * 0.012, yChest + H * 0.04], [-H * 0.012, yChest + H * 0.04]], P.goldDark, 0.5);
   }
-  // sword arm, swinging with the gait
-  const swX = swordSide * s * (0.26 + swing * 0.05), swY = chestY + s * (0.14 - swing * 0.04);
-  capsule(x, swordSide * s * 0.22, chestY, swX, swY, s * 0.062, s * 0.052, P.steelDark);
+
+  /* ---- arms + gear. Shield on the off hand, sword on the lead hand ------ */
+  const shSide = fx >= 0 ? -1 : 1, swSide = -shSide;
+  const shX = shSide * (SH * 0.98), shY = yChest + H * 0.05;
+  capsule(x, shSide * SH * 0.72, yShld + H * 0.02, shX, shY, H * 0.058, H * 0.048, P.steelMid);
+  const swX = swSide * (SH * 0.94 + swing * H * 0.03), swY = yChest + H * (0.05 - swing * 0.025);
+  capsule(x, swSide * SH * 0.70, yShld + H * 0.02, swX, swY, H * 0.055, H * 0.045, P.steelMid);
   if (!back) {
-    const ang = swordSide * (0.5 + swing * 0.22);
-    x.save(); x.translate(swX, swY); x.rotate(ang);
-    capsule(x, 0, 0, 0, -s * 0.16, s * 0.035, s * 0.03, P.leather);      // grip
-    ell(x, 0, -s * 0.17, s * 0.10, s * 0.030, P.gold);                    // crossguard
-    capsule(x, 0, -s * 0.19, 0, -s * 0.74, s * 0.058, s * 0.012, P.steelLite); // blade
+    x.save(); x.translate(swX, swY); x.rotate(swSide * (0.46 + swing * 0.20));
+    poly(x, [[-H * 0.018, H * 0.01], [H * 0.018, H * 0.01],
+             [H * 0.015, -H * 0.085], [-H * 0.015, -H * 0.085]], P.leather);   // grip
+    ell(x, 0, H * 0.020, H * 0.028, H * 0.026, P.gold);                        // pommel
+    poly(x, [[-H * 0.090, -H * 0.082], [H * 0.090, -H * 0.082],
+             [H * 0.072, -H * 0.116], [-H * 0.072, -H * 0.116]], P.gold);      // crossguard
+    poly(x, [[-H * 0.042, -H * 0.116], [H * 0.042, -H * 0.116],
+             [H * 0.030, -H * 0.50], [0, -H * 0.60], [-H * 0.030, -H * 0.50]], P.blade);
+    polyFlat(x, [[-H * 0.009, -H * 0.14], [H * 0.009, -H * 0.14],
+                 [H * 0.006, -H * 0.48], [-H * 0.006, -H * 0.48]], P.bladeDark, 0.5);  // fuller
     x.restore();
   }
 
-  // ---- head + crested helm: the single strongest read at small size ----
-  const hr = s * def.head * 1.42;
-  const headY = chestY - s * 0.38 - hr * 0.52;
-  const headX = fx * s * 0.05;
-  ell(x, headX, headY, hr * 0.92, hr * 0.98, shade(P.skin, 0.85));
-  ell(x, headX, headY - hr * 0.22, hr * 0.92, hr * 0.80, P.steelDark);    // helm dome
-  ell(x, headX - fx * hr * 0.14, headY - hr * 0.40, hr * 0.58, hr * 0.34, P.steel);  // lit crown
-  ell(x, headX, headY - hr * 0.02, hr * 0.96, hr * 0.20, P.gold);         // brow band
+  /* ---- pauldrons: the widest, brightest points of the silhouette -------- */
+  for (const sgn of [-1, 1]) {
+    const px2 = sgn * SH * 0.90 - fx * H * 0.015;
+    // dark rim first, then the lit plate inset into it: at 50px a plate that
+    // shares the cuirass's value simply is not there, so the pauldron needs a
+    // value of its own on BOTH sides of its edge.
+    polyFlat(x, [[px2 - sgn * H * 0.130, yShld - H * 0.070], [px2 + sgn * H * 0.100, yShld - H * 0.028],
+                 [px2 + sgn * H * 0.094, yShld + H * 0.076], [px2 - sgn * H * 0.126, yShld + H * 0.060]],
+             P.steelDark);
+    poly(x, [[px2 - sgn * H * 0.112, yShld - H * 0.054], [px2 + sgn * H * 0.084, yShld - H * 0.018],
+             [px2 + sgn * H * 0.078, yShld + H * 0.058], [px2 - sgn * H * 0.108, yShld + H * 0.046]],
+         P.steelLite);
+    polyFlat(x, [[px2 - sgn * H * 0.112, yShld - H * 0.056], [px2 + sgn * H * 0.084, yShld - H * 0.020],
+                 [px2 + sgn * H * 0.080, yShld + H * 0.004], [px2 - sgn * H * 0.110, yShld - H * 0.018]],
+             P.gold);
+  }
+
+  /* ---- shield, drawn LAST of the body gear -----------------------------
+     It used to go on before the pauldrons, and the pauldron -- a bright
+     horizontal plate -- landed across its top corner and read as a bandage
+     taped over the shield. A shield is held in FRONT; draw it in front. */
+  if (!back) {                                   // kite shield, point down
+    const bx = shX + shSide * H * 0.05, by = yChest + H * 0.03;
+    const w = H * 0.150, hgt = H * 0.225;
+    const kite = k => [
+      [bx - w * k, by - hgt * 0.74 * k], [bx - w * 0.70 * k, by - hgt * k],
+      [bx + w * 0.70 * k, by - hgt * k], [bx + w * k, by - hgt * 0.74 * k],
+      [bx + w * 0.82 * k, by + hgt * 0.30 * k], [bx, by + hgt * k],
+      [bx - w * 0.82 * k, by + hgt * 0.30 * k]
+    ];
+    poly(x, kite(1), P.gold);
+    poly(x, kite(0.80), P.cloth);
+    polyFlat(x, [[bx - H * 0.012, by - hgt * 0.72], [bx + H * 0.012, by - hgt * 0.72],
+                 [bx + H * 0.012, by + hgt * 0.62], [bx - H * 0.012, by + hgt * 0.62]], P.goldLite, 0.85);
+    ell(x, bx, by - hgt * 0.10, H * 0.044, H * 0.048, P.steelLite);
+  }
+
+  /* ---- seen from behind, the gear has to peek past the silhouette ------
+     A back view with the shield and sword culled is just a cape with legs,
+     and in a top-down game the player spends a third of the time looking at
+     it. The blade rises past one shoulder, the shield's rim past the other. */
+  if (back) {
+    x.save(); x.translate(swSide * SH * 0.78, yShld - H * 0.02); x.rotate(swSide * 0.30);
+    poly(x, [[-H * 0.038, 0], [H * 0.038, 0], [H * 0.026, -H * 0.42], [0, -H * 0.50], [-H * 0.026, -H * 0.42]], P.blade);
+    poly(x, [[-H * 0.078, H * 0.005], [H * 0.078, H * 0.005], [H * 0.062, -H * 0.028], [-H * 0.062, -H * 0.028]], P.gold);
+    x.restore();
+    /* Only the shield's RIM clears the body from behind. Drawn as a filled
+       kite it came out as a mustard slab stuck to one hip -- from behind you
+       see an edge, so draw an edge. */
+    const bx = shSide * SH * 1.00, by = yChest + H * 0.05, hgt = H * 0.185;
+    const e = H * 0.030;
+    poly(x, [[bx, by - hgt], [bx + shSide * e, by - hgt * 0.80],
+             [bx + shSide * e * 1.15, by + hgt * 0.34], [bx, by + hgt],
+             [bx - shSide * e * 0.25, by + hgt * 0.30], [bx - shSide * e * 0.20, by - hgt * 0.76]],
+         P.gold);
+    polyFlat(x, [[bx - shSide * e * 0.20, by - hgt * 0.76], [bx, by - hgt * 0.86],
+                 [bx, by + hgt * 0.90], [bx - shSide * e * 0.25, by + hgt * 0.30]], P.leather);
+  }
+
+  /* ---- head: a closed helm, not a face in a bandana --------------------
+     The earlier pass drew a dark band with two gold dots across bare skin,
+     which reads as a domino mask. A helm needs metal BELOW the eye slot as
+     well as above it, and a nasal bar splitting it, or the eye is just a
+     hole in a head. */
+  polyFlat(x, [[-H * 0.050, yChin - H * 0.02], [H * 0.050, yChin - H * 0.02],
+               [H * 0.042, yShld], [-H * 0.042, yShld]], P.skinDark);          // neck
+  // helm: flat-sided with a domed crown
+  x.save();
+  x.beginPath();
+  x.moveTo(hx - hw, hy + hh * 0.42);
+  x.lineTo(hx - hw, hy - hh * 0.18);
+  x.quadraticCurveTo(hx - hw, hy - hh * 1.06, hx, hy - hh * 1.06);
+  x.quadraticCurveTo(hx + hw, hy - hh * 1.06, hx + hw, hy - hh * 0.18);
+  x.lineTo(hx + hw, hy + hh * 0.42);
+  x.closePath();
+  const hg = x.createLinearGradient(0, hy - hh * 1.1, 0, hy + hh * 0.5);
+  hg.addColorStop(0, rgb(...shade(P.steelLite, 0.95)));
+  hg.addColorStop(0.45, rgb(...P.steel));
+  hg.addColorStop(1, rgb(...P.steelDark));
+  x.fillStyle = hg; x.fill(); x.restore();
   if (!back) {
-    ell(x, headX, headY + hr * 0.20, hr * 0.74, hr * 0.20, P.visor);           // narrow visor slot
-    for (const sgn of [-1, 1]) ell(x, headX + sgn * hr * 0.28, headY + hr * 0.19, hr * 0.11, hr * 0.075, P.goldLite);
-    ell(x, headX, headY + hr * 0.52, hr * 0.34, hr * 0.15, shade(P.skin, 0.80)); // jaw below the visor
+    // eye band, cut in two by the nasal bar, with metal below it
+    polyFlat(x, [[hx - hw * 0.86, hy - hh * 0.12], [hx + hw * 0.86, hy - hh * 0.12],
+                 [hx + hw * 0.80, hy + hh * 0.16], [hx - hw * 0.80, hy + hh * 0.16]], P.visor);
+    for (const sgn of [-1, 1]) {
+      ell(x, hx + sgn * hw * 0.44, hy + hh * 0.01, hw * 0.17, hh * 0.09, P.goldLite);
+    }
+    polyFlat(x, [[hx - hw * 0.13, hy - hh * 0.30], [hx + hw * 0.13, hy - hh * 0.30],
+                 [hx + hw * 0.10, hy + hh * 0.46], [hx - hw * 0.10, hy + hh * 0.46]], P.steelLite);  // nasal
+    polyFlat(x, [[hx - hw, hy - hh * 0.30], [hx + hw, hy - hh * 0.30],
+                 [hx + hw * 0.98, hy - hh * 0.14], [hx - hw * 0.98, hy - hh * 0.14]], P.gold);       // brow band
+    // cheek guards, leaving a narrow strip of jaw
+    for (const sgn of [-1, 1]) {
+      polyFlat(x, [[hx + sgn * hw * 0.98, hy + hh * 0.14], [hx + sgn * hw * 0.42, hy + hh * 0.16],
+                   [hx + sgn * hw * 0.46, hy + hh * 0.66], [hx + sgn * hw * 0.92, hy + hh * 0.52]],
+               P.steelMid);
+    }
+    polyFlat(x, [[hx - hw * 0.34, hy + hh * 0.18], [hx + hw * 0.34, hy + hh * 0.18],
+                 [hx + hw * 0.24, hy + hh * 0.54], [hx - hw * 0.24, hy + hh * 0.54]], P.skin);       // jaw
+    polyFlat(x, [[hx - hw * 0.34, hy + hh * 0.42], [hx + hw * 0.34, hy + hh * 0.42],
+                 [hx + hw * 0.26, hy + hh * 0.56], [hx - hw * 0.26, hy + hh * 0.56]], P.skinDark, 0.7);
   }
-  // plume, swaying with the stride
-  for (let i = 0; i < 7; i++) {
-    const t = i / 7;
-    ell(x,
-      headX - fx * hr * (0.05 + t * 0.95) + Math.sin(ph + i * 0.8) * hr * 0.07,
-      headY - hr * (1.28 - t * 0.62),
-      hr * (0.34 - t * 0.04), hr * (0.26 - t * 0.03),
-      mixHex(P.cloth, P.clothDark, 0.15 + t * 0.7));
+
+  /* ---- crest: a fin over the crown plus a horsehair tail ---------------- */
+  {
+    const k = 0.34 + 0.66 * side;                 // seen edge-on it is thin
+    poly(x, [[hx - hw * 0.80 * k, hy - hh * 0.92], [hx + hw * 0.10 * k, hy - hh * 1.78],
+             [hx + hw * 0.78 * k, hy - hh * 0.92]], P.cloth);
+    polyFlat(x, [[hx - hw * 0.80 * k, hy - hh * 0.92], [hx + hw * 0.10 * k, hy - hh * 1.78],
+                 [hx + hw * 0.22 * k, hy - hh * 1.20]], P.clothLite, 0.7);
+    const td = -(fx || 0.35);
+    for (let i = 0; i < 6; i++) {
+      const t = i / 5;
+      ell(x, hx + td * hw * (0.25 + t * 1.15) + Math.sin(ph + i * 0.8) * hw * 0.10,
+          hy - hh * (1.35 - t * 0.85), hw * (0.26 - t * 0.05), hh * (0.22 - t * 0.04),
+          mixHex(P.cloth, P.clothDark, 0.2 + t * 0.7));
+    }
   }
-  x.restore();
 }
 function bakeHero(def) {
   const S = def.px, sheets = [];
@@ -1351,12 +1534,18 @@ function bakeHero(def) {
     const row = [];
     for (let fr = 0; fr < FRAMES; fr++) {
       const { c, x } = makeCanvas(S, S);
-      x.translate(S / 2, S * 0.60);
+      x.translate(S / 2, S * 0.62);
       paintHero(x, def, d, fr);
-      outlineSprite(c, 'rgba(6,4,9,0.97)', 2.1);
-      rimLight(c, LIGHT.x * 2.2, LIGHT.y * 2.2, 'rgba(255,246,214,1)', 0.72);
-      lightPass(c, 0.18, 0.15, null);
-      row.push(boostContrast(c, 1.18, 1.10, 1.0));
+      /* A light touch, unlike bakeUnit's. The creep bake leans hard on rim
+         light because a 28px blob has no internal shading to speak of; the
+         hero is 56px and every plate is already lit by its own gradient, so
+         the same 0.72 rim just flooded the silhouette -- dark boots came out
+         cream, the cape hem pink, the blade haloed. 0.22 at a shorter offset
+         keeps the edge separation from grass without repainting the sprite. */
+      outlineSprite(c, 'rgba(6,4,9,0.97)', 1.7);
+      rimLight(c, LIGHT.x * 1.2, LIGHT.y * 1.2, 'rgba(255,246,214,1)', 0.22);
+      lightPass(c, 0.16, 0.13, null);
+      row.push(boostContrast(c, 1.14, 1.08, 1.0));
     }
     sheets.push(row);
   }
@@ -3043,7 +3232,7 @@ function ev(type, o) { o = o || {}; o.type = type; EVQ.push(o); }
    aimed at wherever the owning player last clicked instead of the exit.
    ============================================================ */
 const HERO_DEF = {
-  name: 'Alp', armor: 3, air: false, speed: 82, px: 84, s: 44, leg: 0.30, head: 0.16,
+  name: 'Alp', armor: 3, air: false, speed: 82, px: 104, s: 44, leg: 0.30, head: 0.16,
   kind: 'humanoid', weapon: 'sword', armorPlate: true, shoulder: true, eye: '#ffe7b0',
   pal: { body: [92, 68, 46], limb: [72, 54, 38], armor: [188, 154, 92], accent: [255, 224, 142], horn: [230, 220, 200] }
 };
@@ -4538,7 +4727,10 @@ function drawHero(x, h) {
   }
   x.restore();
   const w = 40, hgt = 5;
-  const bx = h.x - w / 2, by = h.y - HERO_DEF.px * 0.56;
+  // 0.66, not 0.56: the redrawn hero is taller and wears a crest, and at
+  // 0.56 the bar and the Lv label sat across the helm, hiding the one part
+  // of the sprite that carries its identity.
+  const bx = h.x - w / 2, by = h.y - HERO_DEF.px * 0.66;
   const f = clamp(h.hp / h.maxHp, 0, 1);
   x.fillStyle = 'rgba(0,0,0,0.62)'; x.fillRect(bx - 1, by - 1, w + 2, hgt + 2);
   const g = x.createLinearGradient(bx, by, bx, by + hgt);
