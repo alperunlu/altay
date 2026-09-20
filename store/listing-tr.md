@@ -47,6 +47,13 @@ Kobold sürülerinden Ötüken Devi'ne. Kara Bakşı kulelerini susturur,
 Umay Ana yaralıları iyileştirir, Yelbegen öldüğünde kafaları dağılır.
 10., 20. ve 30. dalgalarda patronlar, finalde üçü birden.
 
+SAVAŞAN BİR KAHRAMAN
+Kahramanın bir kule değil: nereye yürürse yürüsün yerdeki düşmanları
+durdurur ve onlarla dövüşür. Bir gediği tıkamak, patronu oyalamak,
+kaçanı kesmek onun işi. İki yeteneği var — Kalkan Duvarı gelen hasarın
+dörtte üçünü keser ve daha çok düşman tutar, Kasırga çevresindeki
+herkesi biçip yavaşlatır. Dövüştükçe seviye atlar, düşerse dirilir.
+
 DÖRT KİŞİYE KADAR ORTAK OYUN
 Oda kodu paylaş, arkadaşların katılsın. Herkesin kendi kesesi, kendi
 kahramanı, kendi kuleleri var. Sunucu yok, hesap yok, kayıt yok.

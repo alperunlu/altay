@@ -224,14 +224,15 @@ const LANE_ROWS = [4, 15];
    a command field, a message type. It exists because the wire is positional
    (see the KIDX/CIDX note) and this session alone changed it twice: purses
    went from two fixed entries to a four-wide array, and the hero snapshot
-   grew a tenth slot. Without a check, a client still holding an older cached
+   grew a tenth slot, and then three more for the hero's ability cooldowns
+   alongside a new `heroAbil` command. Without a check, a client still holding an older cached
    build connects successfully and then quietly misreads the game -- it never
    learns which seat it was given, so it keeps spending player 1's purse on
    screen while the host books its commands against seat 2. That is silent
    corruption, and OTA updates (where clients legitimately sit on different
    bundles for a while) make it MORE likely, not less. */
 const APP_VERSION = '1.0.0';
-const NET_PROTOCOL = 3;
+const NET_PROTOCOL = 4;
 const HANDSHAKE_MS = 5000;   // a guest that hasn't identified itself by now is too old to talk to
 
 const MAX_PLAYERS = 4;
@@ -3085,7 +3086,7 @@ function spawnHero(owner) {
   const p = heroSpawnPoint(owner);
   return {
     owner, x: p.x, y: p.y, tx: p.x, ty: p.y, vx: 0, vy: 0, dir: 4, frame: 0, anim: 0,
-    hp: HERO_STATS.hp, maxHp: HERO_STATS.hp, level: 1, kills: 0, xp: 0, cd: 0, dead: false, respawnT: 0, hitFlash: 0, blockCount: 0, calmT: 0
+    hp: HERO_STATS.hp, maxHp: HERO_STATS.hp, level: 1, kills: 0, xp: 0, cd: 0, dead: false, respawnT: 0, hitFlash: 0, blockCount: 0, calmT: 0, acd: [0, 0], wallT: 0
   };
 }
 /* How full the hero's XP bar is, 0..1. A guest never runs updateHeroes (the
@@ -3109,10 +3110,61 @@ function heroBlocking(c) {
   if (c.air || c.dead) return null;
   for (const h of G.heroes) {
     if (!h || h.dead) continue;
-    if (h.blockCount >= HERO_STATS.blockCap) continue;
+    if (h.blockCount >= HERO_STATS.blockCap + (h.wallT > 0 ? HERO_ABILITIES[0].holdBonus : 0)) continue;
     if (dist2(c.x, c.y, h.x, h.y) < HERO_STATS.blockRadius * HERO_STATS.blockRadius) return h;
   }
   return null;
+}
+/* Hero abilities. Both are instant self-effects rather than point-targeted:
+   the hero already owns a persistent click-to-aim mode for movement, and a
+   second aiming mode competing with it is exactly the sort of mode confusion
+   that makes a phone control scheme miserable. The decision here is WHEN,
+   not where, which is enough -- Kalkan Duvarı is the "plug the breach" hold
+   and Kasırga is the "I am surrounded" answer. */
+const HERO_ABILITIES = [
+  // keys deliberately avoid X: that is already the tower fire-mode shortcut.
+  /* holdBonus (wall raises the block cap as well as cutting damage) looked
+     like a trap in a 5-map sweep -- hard went 3/5 to 0/5 with it on. It is
+     not: on hard this bot wins with 1-5 lives left, so a 5-run matrix is a
+     coin flip and reshuffles on ANY perturbation of the sim's RNG stream.
+     Re-measured over 15 runs per cell (5 maps x 3 build strategies), with
+     abilities on: holdBonus 3 is 5/15 and reaches wave 23.2 on average,
+     holdBonus 0 is 2/15 and wave 20.9. It stays. The lesson is about the
+     instrument, not the ability -- do not tune hard off 5 samples. */
+  { key: 'Z', name: 'Kalkan Duvarı', cd: 26, dur: 6, takenMult: 0.25, holdBonus: 3,
+    lore: 'Gelen hasarın dörtte üçünü keser, daha çok düşman tutar.' },
+  { key: 'C', name: 'Kasırga', cd: 20, radius: 92, dmgMult: 3.4, slow: 0.45, slowDur: 2.2,
+    lore: 'Çevrendeki herkesi biçer ve yavaşlatır.' }
+];
+function heroAbilityReady(h, i) { return h && !h.dead && (h.acd[i] || 0) <= 0; }
+function useHeroAbility(h, owner, i) {
+  if (!h || h.owner !== owner) return { ok: false, why: 'Bu kahraman senin değil' };
+  if (h.dead) return { ok: false, why: 'Kahraman düştü' };
+  const ab = HERO_ABILITIES[i]; if (!ab) return { ok: false, why: 'Yetenek yok' };
+  if ((h.acd[i] || 0) > 0) return { ok: false, why: 'Bekleme süresi dolmadı' };
+  h.acd[i] = ab.cd;
+  if (i === 0) {
+    h.wallT = ab.dur;
+    ev('heroWall', { x: h.x, y: h.y, owner });
+  } else {
+    const r2 = ab.radius * ab.radius;
+    // snapshot: killCreep APPENDS splitter children mid-loop (see its header),
+    // and a whirl should not also shred the children it just created.
+    for (const c of G.creeps.slice()) {
+      if (c.dead || c.air) continue;
+      if (dist2(h.x, h.y, c.x, c.y) > r2) continue;
+      // XP on the same per-point-of-damage rule as the auto-attack, so a
+      // well-placed Kasırga actually advances the hero instead of being the
+      // one damage source in the game that pays nothing.
+      const maxHp = c.maxHp || 1, worth = c.bounty || 1;
+      const dealt = damage(c, heroDmg(h) * ab.dmgMult, 'piercing', owner, null);
+      if (heroGainXp(h, worth * Math.min(1, dealt / maxHp))) ev('heroLevel', { x: h.x, y: h.y, owner, lv: h.level });
+      if (!c.dead) { c.slow = Math.max(c.slow, ab.slow); c.slowT = Math.max(c.slowT, ab.slowDur); }
+    }
+    ev('heroWhirl', { x: h.x, y: h.y, r: ab.radius, owner });
+  }
+  ev('sfx', { name: 'ui', x: h.x, y: h.y });
+  return { ok: true };
 }
 function heroDmg(h) { return HERO_STATS.dmg * (1 + (h.level - 1) * HERO_STATS.dmgPerLevel); }
 function heroMaxHp(h) { return HERO_STATS.hp + (h.level - 1) * HERO_STATS.hpPerLevel; }
@@ -3134,6 +3186,8 @@ function updateHeroes(dt) {
   for (const h of G.heroes) {
     if (!h) continue;
     if (h.hitFlash > 0) h.hitFlash -= dt;
+    for (let i = 0; i < h.acd.length; i++) if (h.acd[i] > 0) h.acd[i] -= dt;
+    if (h.wallT > 0) h.wallT -= dt;
     if (h.dead) {
       h.respawnT -= dt;
       if (h.respawnT <= 0) {
@@ -3320,7 +3374,8 @@ function updateCreeps(dt) {
       c.atkT = (c.atkT || 0) - dt;
       if (c.atkT <= 0) {
         c.atkT = 0.9;
-        holder.hp -= HERO_STATS.blockDps * (1 + G.waveIdx * HERO_STATS.contactPerWave);
+        holder.hp -= HERO_STATS.blockDps * (1 + G.waveIdx * HERO_STATS.contactPerWave)
+          * (holder.wallT > 0 ? HERO_ABILITIES[0].takenMult : 1);
         holder.hitFlash = 0.16; holder.calmT = 0;
         ev('heroHit', { x: holder.x, y: holder.y, owner: holder.owner });
         if (holder.hp <= 0) {
@@ -3440,7 +3495,9 @@ function killCreep(c, ownerIdx) {
   if (c.dead) return;
   c.dead = true; c.deathT = 0.75; c.alive = false;
   G.killed++;
-  const o = clamp(ownerIdx | 0, 0, 1);
+  // clamp to MAX_PLAYERS-1, not 1: this was a two-player leftover, and with
+  // four seats it silently paid seats 3 and 4's bounties into seat 2's purse.
+  const o = clamp(ownerIdx | 0, 0, MAX_PLAYERS - 1);
   G.gold[o] += c.bounty; G.score[o] += c.bounty;
   // same ev()-clobbers-"type" hazard as waveStart above — use ctype, not type
   ev('kill', { x: c.x, y: c.y - c.z, boss: c.boss, gold: c.bounty, owner: o, ctype: c.type });
@@ -4462,6 +4519,17 @@ function drawHero(x, h) {
   const sheet = R.sprites.hero; if (!sheet) return;
   const img = sheet[h.dir][h.frame];
   const sx = h.x - HERO_DEF.px / 2, sy = h.y - HERO_DEF.px * 0.62;
+  // Shield Wall is a timed state the player has to be able to read at a
+  // glance while it is running -- the HUD button tells you it FIRED, this
+  // tells you it is still up, and it pulses so the last second is obvious.
+  if (h.wallT > 0) {
+    const p = 0.62 + 0.38 * Math.sin(G.tick * 0.28);
+    x.save();
+    x.globalAlpha = clamp(h.wallT, 0, 1) * 0.55 * p;
+    x.strokeStyle = '#ffd76a'; x.lineWidth = 2;
+    x.beginPath(); x.ellipse(h.x, h.y + 2, HERO_STATS.blockRadius * 0.52, HERO_STATS.blockRadius * 0.26, 0, 0, TAU); x.stroke();
+    x.restore();
+  }
   x.save();
   x.drawImage(img, sx, sy);
   if (h.hitFlash > 0) {
@@ -4837,9 +4905,21 @@ function drawHUD(x, W, H) {
   const ipw = Math.min(250 * S, W * 0.34);
   drawInfoPanel(x, 14, by + 8, ipw, bh - 16, S);
 
+  /* Right-hand cluster geometry is computed BEFORE the build row is drawn,
+     because the build row has to fit in whatever is left over. It used to
+     reserve a hardcoded 190*S for the right side, which was already a guess
+     and became a wrong one the moment the cluster grew from 2 buttons to 5
+     (2 spells + hero toggle + 2 hero abilities): at 1024px the wave-call
+     button landed on top of the last two build buttons. Derive it instead. */
+  const sw = 52 * S;
+  const rightN = SPELLS.length + (G.heroes[NET.me] ? 1 + HERO_ABILITIES.length : 0);
+  const rightW = rightN * sw + (rightN - 1) * 6 * S;
+  const startW = 92 * S, startH = Math.max(TOUCH_MIN, 44 * S);
+  const startX = W - 14 - rightW - 8 * S - startW;
+
   // build buttons (center)
-  const bw = Math.min(62 * S, (W - ipw - 190 * S) / 5.4);
   const bstart = 14 + ipw + 10 * S;
+  const bw = Math.max(34 * S, Math.min(62 * S, (startX - 10 * S - bstart - 4 * 6 * S) / 5));
   TOWER_KEYS.forEach((k, i) => {
     const def = TOWERS[k];
     const r = addRect('b' + k, bstart + i * (bw + 6 * S), by + (bh - bw) / 2, bw, bw, () => selectBuild(k));
@@ -4848,18 +4928,14 @@ function drawHUD(x, W, H) {
     btn(x, r, def.key, String(def.cost), UI.buildKind === k, !afford, spr && spr.base);
   });
 
-  // spells + start (right)
-  const sw = 52 * S;
+  // spells + start (right); geometry above
   let rx = W - 14 - sw;
   // the wave button sits left of *every* button in the right-hand cluster — it
   // used to be offset from the first spell only, so the last spell was drawn on
   // top of its right half and (rects being hit-tested in insertion order) could
-  // never be tapped. Count the buttons rather than hardcoding SPELLS.length, so
-  // adding one here (the hero toggle below) can't silently reintroduce that.
-  const rightN = SPELLS.length + (G.heroes[NET.me] ? 1 : 0);
-  const rightW = rightN * sw + (rightN - 1) * 6 * S;
-  const startW = 92 * S, startH = Math.max(TOUCH_MIN, 44 * S);
-  const startR = addRect('start', W - 14 - rightW - 8 * S - startW, by + (bh - startH) / 2, startW, startH, () => cmdStartWave());
+  // never be tapped. rightN counts the buttons rather than hardcoding
+  // SPELLS.length, so adding one here can't silently reintroduce that.
+  const startR = addRect('start', startX, by + (bh - startH) / 2, startW, startH, () => cmdStartWave());
   panel(x, startR.x, startR.y, startR.w, startR.h, { gold: G.phase === 'prep', hi: G.phase === 'prep', r: 7 });
   txt(x, G.phase === 'prep' ? 'DALGAYI ÇAĞIR' : 'SAVAŞ SÜRÜYOR', startR.x + startR.w / 2, startR.y + startR.h / 2 - 6 * S, 10.5 * S, G.phase === 'prep' ? '#ffe08a' : '#8a8578', 'center', 800);
   txt(x, G.phase === 'prep' ? `+${Math.ceil(G.prepTimer / TICK_HZ)}s erken bonus` : `dalga ${WAVES.length}'e kadar`, startR.x + startR.w / 2, startR.y + startR.h / 2 + 10 * S, 8.5 * S, '#a89f8a', 'center', 600, 'system-ui');
@@ -4891,6 +4967,11 @@ function drawHUD(x, W, H) {
     txt(x, h.dead ? Math.ceil(h.respawnT) + 's' : 'Lv' + h.level, hr.x + hr.w / 2, hr.y + hr.h - 12 * S, 8 * S, '#c9d6e0', 'center', 700, 'system-ui');
     heroXpBar(x, hr.x + 7 * S, hr.y + hr.h - 7 * S, hr.w - 14 * S, 2.6 * S, h);
     rx -= sw + 6 * S;
+    HERO_ABILITIES.forEach((ab, i) => {
+      const r = addRect('habil' + i, rx, by + (bh - sw) / 2, sw, sw, () => cmdHeroAbility(i));
+      heroAbilityBtn(x, r, h, i, S);
+      rx -= sw + 6 * S;
+    });
   }
 
   /* ---- toasts ---- */
@@ -4984,17 +5065,28 @@ function drawHUDPortrait(x, W, H, M) {
   // one slot further left and shrinks the wave-call button's width to match,
   // same generalized-N-button approach used for the info panel's up/sell/
   // mode/ability row elsewhere in this file -- not a hand-tuned one-off.
-  const sw = M.actH;
   const hasHero = !!G.heroes[NET.me];
-  const sp0x = W - pad - sw, sp1x = sp0x - gap - sw, heroX = sp1x - gap - sw;
-  const startR = addRect('start', pad, actY, (hasHero ? heroX : sp1x) - gap - pad, sw, () => cmdStartWave());
+  // Portrait is the tight layout, so the right cluster gets sized to fit
+  // rather than assumed to: with a hero there are 5 buttons (2 spells, the
+  // hero toggle, 2 hero abilities) competing with the wave-call button for
+  // one phone-width row. Shrink the squares only as far as TOUCH_MIN, then
+  // let the wave button take whatever is left -- it is a wide text button and
+  // degrades gracefully, a 40px square does not.
+  const rightN = SPELLS.length + (hasHero ? 1 + HERO_ABILITIES.length : 0);
+  const START_MIN = 104;
+  const room = W - pad * 2 - START_MIN - gap - (rightN - 1) * gap;
+  const sw = clamp(Math.floor(room / rightN), TOUCH_MIN, M.actH);
+  const colX = k => W - pad - sw - k * (sw + gap);   // k=0 is the rightmost
+  const aY = actY + (M.actH - sw) / 2;               // keep the row centred when sw shrank
+  const sp0x = colX(0), sp1x = colX(1), heroX = colX(2);
+  const startR = addRect('start', pad, aY, colX(rightN - 1) - gap - pad, sw, () => cmdStartWave());
   panel(x, startR.x, startR.y, startR.w, startR.h, { gold: G.phase === 'prep', hi: G.phase === 'prep', r: 7 });
   txt(x, G.phase === 'prep' ? 'DALGAYI ÇAĞIR' : 'SAVAŞ SÜRÜYOR', startR.x + startR.w / 2, startR.y + startR.h / 2 - 7,
     11.5, G.phase === 'prep' ? '#ffe08a' : '#8a8578', 'center', 800);
   txt(x, G.phase === 'prep' ? `+${Math.ceil(G.prepTimer / TICK_HZ)}s erken bonus` : `dalga ${WAVES.length}'e kadar`,
     startR.x + startR.w / 2, startR.y + startR.h / 2 + 10, 9, '#a89f8a', 'center', 600, 'system-ui');
   SPELLS.forEach((sp, i) => {
-    const r = addRect('sp' + i, i === 0 ? sp0x : sp1x, actY, sw, sw, () => triggerSpell(i));
+    const r = addRect('sp' + i, i === 0 ? sp0x : sp1x, aY, sw, sw, () => triggerSpell(i));
     const ready = G.spell[i].cd <= 0;
     panel(x, r.x, r.y, r.w, r.h, { hi: UI.spellAim === i, gold: ready, r: 7 });
     drawSpellIcon(x, i, r.x + r.w / 2, r.y + r.h / 2 - 3, 14, ready);
@@ -5007,7 +5099,7 @@ function drawHUDPortrait(x, W, H, M) {
 
   if (hasHero) {
     const h = G.heroes[NET.me];
-    const hr = addRect('hero', heroX, actY, sw, sw, () => {
+    const hr = addRect('hero', heroX, aY, sw, sw, () => {
       UI.spellAim = UI.spellAim === 'hero' ? null : 'hero';
       UI.buildKind = null; UI.sel = null; UI.abilId = null;
       Audio2.play('ui');
@@ -5016,6 +5108,10 @@ function drawHUDPortrait(x, W, H, M) {
     txt(x, 'K', hr.x + hr.w / 2, hr.y + hr.h / 2 - 4, 16, '#ffd76a', 'center', 800);
     txt(x, h.dead ? Math.ceil(h.respawnT) + 's' : 'Lv' + h.level, hr.x + hr.w / 2, hr.y + hr.h - 12, 8, '#c9d6e0', 'center', 700, 'system-ui');
     heroXpBar(x, hr.x + 7, hr.y + hr.h - 7, hr.w - 14, 2.6, h);
+    HERO_ABILITIES.forEach((ab, i) => {
+      const r = addRect('habil' + i, colX(3 + i), aY, sw, sw, () => cmdHeroAbility(i));
+      heroAbilityBtn(x, r, h, i, 1);
+    });
   }
 
   /* ---- toasts ---- */
@@ -5044,6 +5140,51 @@ function heroXpBar(x, bx, by, bw, bh, h) {
   x.fillStyle = maxed ? 'rgba(255,214,106,0.95)' : 'rgba(150,220,255,0.92)';
   roundRect(x, bx, by, Math.max(bh, bw * f), bh, bh / 2); x.fill();
 }
+/* One hero-ability button, shared by the landscape and portrait HUDs so the
+   two layouts can never drift apart on cooldown readout or ready styling.
+   `s` is the layout's scale factor (1 in portrait, S in landscape). */
+function heroAbilityBtn(x, r, h, i, s) {
+  const ab = HERO_ABILITIES[i], ready = heroAbilityReady(h, i);
+  panel(x, r.x, r.y, r.w, r.h, { gold: ready, hi: i === 0 && h.wallT > 0, r: 7 });
+  drawHeroAbilIcon(x, i, r.x + r.w / 2, r.y + r.h / 2 - 3 * s, 15 * s, ready);
+  txt(x, ab.key, r.x + 7 * s, r.y + 9 * s, 9 * s, '#ffd76a', 'left', 800);
+  if (!ready) {
+    x.save(); x.fillStyle = 'rgba(6,8,12,0.62)'; roundRect(x, r.x, r.y, r.w, r.h, 7); x.fill();
+    txt(x, Math.ceil(h.acd[i]) + 's', r.x + r.w / 2, r.y + r.h / 2, 15 * s, '#cfd6e0', 'center', 800); x.restore();
+  }
+}
+/* Vector glyphs rather than baked sprites: these are two shapes drawn once a
+   frame, and the sprite atlas is already the load-time cost we spent item 12
+   cutting down. */
+function drawHeroAbilIcon(x, i, cx, cy, r, ready) {
+  x.save();
+  x.strokeStyle = ready ? '#ffe3a0' : '#7d8493';
+  x.fillStyle = ready ? 'rgba(255,214,106,0.26)' : 'rgba(120,130,150,0.18)';
+  x.lineWidth = Math.max(1.3, r * 0.13); x.lineJoin = 'round';
+  if (i === 0) {                                   // kite shield
+    x.beginPath();
+    x.moveTo(cx, cy - r * 0.62);
+    x.lineTo(cx + r * 0.52, cy - r * 0.34);
+    x.lineTo(cx + r * 0.40, cy + r * 0.30);
+    x.lineTo(cx, cy + r * 0.66);
+    x.lineTo(cx - r * 0.40, cy + r * 0.30);
+    x.lineTo(cx - r * 0.52, cy - r * 0.34);
+    x.closePath(); x.fill(); x.stroke();
+    x.beginPath(); x.moveTo(cx, cy - r * 0.44); x.lineTo(cx, cy + r * 0.44); x.stroke();
+  } else {                                         // whirl: two sweeping arcs
+    for (let k = 0; k < 2; k++) {
+      x.beginPath();
+      x.arc(cx, cy, r * 0.58, k * Math.PI + 0.3, k * Math.PI + Math.PI - 0.3);
+      x.stroke();
+      const a = k * Math.PI + Math.PI - 0.3;
+      x.beginPath();
+      x.moveTo(cx + Math.cos(a) * r * 0.58, cy + Math.sin(a) * r * 0.58);
+      x.lineTo(cx + Math.cos(a - 0.5) * r * 0.90, cy + Math.sin(a - 0.5) * r * 0.90);
+      x.stroke();
+    }
+  }
+  x.restore();
+}
 function drawInfoPanelPortrait(x, px, py, w, h) {
   panel(x, px, py, w, h, { r: 7 });
   const t = UI.sel;
@@ -5051,7 +5192,16 @@ function drawInfoPanelPortrait(x, px, py, w, h) {
   const L = (s, i, size, col, font) => txt(x, fitText(x, s, maxW, size, font, 600), px + 10, py + 13 + i * 15, size, col, 'left', 600, font);
   if (!t) {
     const k = UI.buildKind;
-    if (k) {
+    const hh = UI.spellAim === 'hero' && G.heroes[NET.me];   // see the landscape twin
+    if (hh) {
+      txt(x, 'KAHRAMAN · Lv' + hh.level, px + 10, py + 14, 13, '#ffe0a0', 'left', 800);
+      L(`${Math.round(hh.hp)}/${Math.round(hh.maxHp)} can · ${Math.round(heroDmg(hh))} hasar`, 1, 10, '#c9bfa6', 'system-ui');
+      HERO_ABILITIES.forEach((ab, i) => {
+        const ready = heroAbilityReady(hh, i);
+        L(`${ab.key} · ${ab.name}` + (ready ? ' — hazır' : ` — ${Math.ceil(hh.acd[i])}s`) + ' · ' + ab.lore,
+          2 + i, 9, ready ? '#ffd76a' : '#7f8a72', 'system-ui');
+      });
+    } else if (k) {
       const def = TOWERS[k], lv = def.lv[0];
       txt(x, def.name, px + 10, py + 14, 13, '#ffe0a0', 'left', 800);
       L(`${lv.dmg} hasar · ${DMGT[def.dmgType]} · ${lv.range} menzil`, 1, 10, '#c9bfa6', 'system-ui');
@@ -5140,7 +5290,22 @@ function drawInfoPanel(x, px, py, w, h, S) {
   const t = UI.sel;
   if (!t) {
     const k = UI.buildKind;
-    if (k) {
+    /* Arming hero mode turns this panel into the hero's card. The abilities
+       are otherwise two unlabelled glyphs on the bar -- this is where a
+       player finds out what Z and C actually do, without a separate screen
+       and without a hover tooltip (there is no hover on a phone). */
+    const hh = UI.spellAim === 'hero' && G.heroes[NET.me];
+    if (hh) {
+      txt(x, 'KAHRAMAN · Lv' + hh.level, px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
+      txt(x, `${Math.round(hh.hp)}/${Math.round(hh.maxHp)} can · ${Math.round(heroDmg(hh))} hasar · zemine dokun → yürü`, px + 10, py + 32 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
+      // 24px per ability, not 26: two name+lore pairs at 26 ran the second
+      // lore line straight through the panel's bottom edge at 900px tall.
+      HERO_ABILITIES.forEach((ab, i) => {
+        const ready = heroAbilityReady(hh, i);
+        txt(x, `${ab.key} · ${ab.name}` + (ready ? '' : ` (${Math.ceil(hh.acd[i])}s)`), px + 10, py + (49 + i * 24) * S, 9.5 * S, ready ? '#ffd76a' : '#7f8a72', 'left', 700, 'system-ui');
+        txt(x, fitText(x, ab.lore, w - 20, 8.5 * S, 'system-ui', 600), px + 10, py + (60 + i * 24) * S, 8.5 * S, '#9a917f', 'left', 600, 'system-ui');
+      });
+    } else if (k) {
       const def = TOWERS[k], lv = def.lv[0];
       txt(x, def.name, px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
       txt(x, `${lv.dmg} hasar · ${DMGT[def.dmgType]} · ${lv.range} menzil`, px + 10, py + 33 * S, 9.5 * S, '#c9bfa6', 'left', 600, 'system-ui');
@@ -5369,6 +5534,9 @@ function applyCmd(c, who) {
     if (res.ok) { ev('sell', { x: t.x, y: t.y }); ev('sfx', { name: 'sell' }); NET.gridDirty = true; if (UI.sel === t) UI.sel = null; }
   } else if (c.k === 'mode') {
     const t = G.towers.find(t => t.id === c.id); if (t && t.owner === who) t.mode = (t.mode + 1) % 4;
+  } else if (c.k === 'heroAbil') {
+    const res = useHeroAbility(G.heroes[who], who, c.i | 0);
+    if (!res.ok && who === NET.me) { UI.toast(res.why, '#ff9a8a'); Audio2.play('deny'); }
   } else if (c.k === 'reinforce') {
     const t = G.towers.find(t => t.id === c.id); if (!t) return;
     const res = reinforceTower(t, who);
@@ -5435,6 +5603,17 @@ function cmdAbility(t) {
   } else {
     issue({ k: 'ability', id: t.id }); Audio2.play('ui');
   }
+}
+/* Hero ability trigger. Both abilities are instant self-effects, so unlike
+   cmdAbility there is no aiming branch at all -- the press IS the whole
+   interaction. The local cooldown read is only for immediate deny feedback;
+   useHeroAbility on the host re-checks it, so a guest cannot fire early by
+   running ahead of its snapshot. */
+function cmdHeroAbility(i) {
+  const h = G.heroes[NET.me];
+  if (!h) return;
+  if (!heroAbilityReady(h, i)) { Audio2.play('deny'); return; }
+  issue({ k: 'heroAbil', i }); Audio2.play('ui');
 }
 function triggerSpell(i) {
   if (G.spell[i].cd > 0) { Audio2.play('deny'); return; }
@@ -5607,6 +5786,8 @@ function bindInput(cv) {
     else if (k === 'x') cmdMode();
     else if (k === 'q') triggerSpell(0);
     else if (k === 'w') triggerSpell(1);
+    else if (k === 'z') cmdHeroAbility(0);
+    else if (k === 'c') cmdHeroAbility(1);
     else if (e.code === 'Space') { e.preventDefault(); cmdStartWave(); }
     else if (k === '+' || k === '=') cmdSpeed(0, G.speed + 1);
     else if (k === '-') cmdSpeed(0, G.speed - 1);
@@ -5643,6 +5824,16 @@ function processEvents(list) {
       case 'heroLevel':
         FX.ring(e.x, e.y, 4, 40, '255,220,140', 0.6, 3);
         if (e.owner === NET.me) UI.toast(`Kahraman seviye ${e.lv}`, '#ffd76a');
+        break;
+      case 'heroWall':
+        FX.ring(e.x, e.y, 10, HERO_STATS.blockRadius + 6, '255,214,106', 0.55, 4);
+        FX.ring(e.x, e.y, 4, HERO_STATS.blockRadius * 0.6, '255,240,200', 0.35, 2);
+        if (e.owner === NET.me) { UI.toast('Kalkan Duvarı!', '#ffd76a'); Native.haptic('medium'); }
+        break;
+      case 'heroWhirl':
+        FX.ring(e.x, e.y, 6, e.r, '190,225,255', 0.45, 5);
+        FX.ring(e.x, e.y, e.r * 0.4, e.r * 1.15, '255,255,255', 0.28, 2);
+        if (e.owner === NET.me) Native.haptic('medium');
         break;
       case 'healTick': FX.healTick(e.x, e.y); break;
       case 'smite': FX.smite(e.x, e.y, e.r); break;
@@ -5707,9 +5898,14 @@ function snapshot() {
   // positions exactly like it already does for creeps (see applySnapshot
   // and the guest branch of loop()), it never needs to know the host's
   // click-target to render correctly.
-  // slot 9 (xp fraction) is APPENDED, never inserted -- the hero snapshot is
+  // slot 9 (xp fraction) and slots 10..12 (the two ability cooldowns and the
+  // shield-wall timer) are APPENDED, never inserted -- the hero snapshot is
   // positional like every other array on the wire (see the KIDX/CIDX note).
-  const hr = G.heroes.map(h => h ? [Math.round(h.x), Math.round(h.y), Math.round(h.hp), Math.round(h.maxHp), h.level, h.dead ? 1 : 0, Math.round(h.respawnT * 10) / 10, h.dir, h.frame, Math.round(heroXpFrac(h) * 100)] : null);
+  // Appending them is still a wire-shape change, hence NET_PROTOCOL 3 -> 4:
+  // a guest that renders ability buttons needs a host that actually sends the
+  // cooldowns, or every button reads "ready" and every press gets denied.
+  const hr = G.heroes.map(h => h ? [Math.round(h.x), Math.round(h.y), Math.round(h.hp), Math.round(h.maxHp), h.level, h.dead ? 1 : 0, Math.round(h.respawnT * 10) / 10, h.dir, h.frame, Math.round(heroXpFrac(h) * 100),
+    Math.max(0, Math.round(h.acd[0] * 10) / 10), Math.max(0, Math.round(h.acd[1] * 10) / 10), Math.max(0, Math.round(h.wallT * 10) / 10)] : null);
   const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: G.gold.map(v => v | 0), pl: G.players, wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, hr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ms: G.mapSeed, ev: EVQ.slice() };
   if (NET.gridDirty) { s.g = Array.from(G.grid); NET.gridDirty = false; }
   return s;
@@ -5777,6 +5973,8 @@ function applySnapshot(s) {
       if (!prev) { h.x = a[0]; h.y = a[1]; }
       h.hp = a[2]; h.maxHp = a[3]; h.level = a[4]; h.dead = !!a[5]; h.respawnT = a[6]; h.dir = a[7]; h.frame = a[8];
       h.xpFrac = (a[9] || 0) / 100;  // appended slot; older hosts simply omit it
+      h.acd = [a[10] || 0, a[11] || 0];  // appended -- drives the guest's button cooldowns
+      h.wallT = a[12] || 0;              // appended -- drives the shield-wall glow
       return h;
     });
   }

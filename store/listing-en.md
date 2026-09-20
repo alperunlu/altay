@@ -44,6 +44,13 @@ From kobold swarms to the Otuken Giant. Shamans silence your towers,
 healers patch the wounded, and the many-headed Yelbegen scatters when it
 falls. Bosses at 10, 20 and 30 — and all three at once in the finale.
 
+A HERO THAT ACTUALLY FIGHTS
+Your hero is not a tower. Ground enemies that reach it stop and fight it,
+so where you stand it decides whether a breach holds. Two abilities:
+Shield Wall cuts three quarters of incoming damage and holds a wider gap,
+Whirlwind shreds and slows everything around you. It levels up by
+fighting, and it gets back up when it falls.
+
 CO-OP FOR UP TO FOUR
 Share a room code and friends drop in. Everyone gets their own purse,
 their own hero and their own towers. No server, no account, no sign-up.
