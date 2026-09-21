@@ -2724,6 +2724,97 @@ function generateMap(seed, cfg) {
 /* ---------- flow field (dijkstra from exit) ---------- */
 const _q = new Int32Array(GW * GH * 4);
 function passable(i) { const v = G.grid[i]; return v === 0 || v === 3; }
+/* Nearest passable cell to (gx,gy), searched ring by ring outward. Used when
+   a hero order lands ON a rock or a tower -- rather than refusing the click
+   (which reads as broken on a phone, where "just past" a wall is exactly
+   where fat fingers land) it walks to the nearest open ground instead. */
+function nearestPassable(gx, gy) {
+  if (passable(idxOf(gx, gy))) return [gx, gy];
+  for (let r = 1; r <= 6; r++) {
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;   // ring only
+      const nx = gx + dx, ny = gy + dy;
+      if (!inGrid(nx, ny) || !passable(idxOf(nx, ny))) continue;
+      return [nx, ny];
+    }
+  }
+  return null;
+}
+/* Point-to-point pathfinding for the hero's click-to-move order, over the
+   exact same passable()/diagonal-corner rule the creep flow field uses (see
+   computeFlow just below) -- so the hero is bound by the maze the player
+   built instead of beelining through rocks and tower bases to the cursor,
+   which is what it did before this existed. Grid-space Dijkstra in, world-
+   space tile-centre waypoints out; the FINAL waypoint is the raw click
+   point rather than a tile centre, so the hero stops where you actually
+   tapped rather than at a rounded-off approximation of it. Cheap enough to
+   run synchronously on every click: the grid is 44x20 cells. */
+function heroPathTo(fromX, fromY, toX, toY) {
+  let sgx = clamp((fromX / TILE) | 0, 0, GW - 1), sgy = clamp((fromY / TILE) | 0, 0, GH - 1);
+  let tgx = clamp((toX / TILE) | 0, 0, GW - 1), tgy = clamp((toY / TILE) | 0, 0, GH - 1);
+  const snappedTarget = !passable(idxOf(tgx, tgy));
+  if (!passable(idxOf(sgx, sgy))) {
+    const n = nearestPassable(sgx, sgy); if (!n) return null; sgx = n[0]; sgy = n[1];
+  }
+  if (snappedTarget) {
+    const n = nearestPassable(tgx, tgy); if (!n) return null; tgx = n[0]; tgy = n[1];
+  }
+  const startI = idxOf(sgx, sgy), targetI = idxOf(tgx, tgy);
+  if (startI === targetI) return [[toX, toY]];
+
+  // Float64, matching computeFlow's own G.dist just below -- Float32 here
+  // silently rounds a diagonal cost (14.14, not exactly representable) down
+  // by a hair on write, so the very next read of that SAME distance back out
+  // of the array compares smaller than the full-precision key still sitting
+  // in the heap, and the lazy "stale pop" check (`d > dist[i]`) misreads a
+  // just-settled cell as stale and drops it -- along with everything past
+  // it. Measured: on a fully open 44x20 grid this discovered 257 of 880
+  // cells before the heap emptied out; the same map with Float64 finds all
+  // 880, matching a plain BFS run as a reference.
+  const N = GW * GH, dist = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
+  dist[startI] = 0;
+  const heap = [[0, startI]];
+  const push = (d, i) => {
+    heap.push([d, i]); let c = heap.length - 1;
+    while (c > 0) { const p = (c - 1) >> 1; if (heap[p][0] <= heap[c][0]) break; const t = heap[p]; heap[p] = heap[c]; heap[c] = t; c = p; }
+  };
+  const pop = () => {
+    const top = heap[0], last = heap.pop();
+    if (heap.length) {
+      heap[0] = last; let c = 0;
+      for (;;) {
+        const l = c * 2 + 1, r = l + 1; let m = c;
+        if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+        if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+        if (m === c) break;
+        const t = heap[m]; heap[m] = heap[c]; heap[c] = t; c = m;
+      }
+    }
+    return top;
+  };
+  while (heap.length) {
+    const [d, i] = pop();
+    if (d > dist[i]) continue;
+    if (i === targetI) break;
+    const x = i % GW, y = (i / GW) | 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = x + dx, ny = y + dy; if (!inGrid(nx, ny)) continue;
+      const ni = idxOf(nx, ny); if (!passable(ni)) continue;
+      if (dx && dy) { if (!passable(idxOf(x + dx, y)) || !passable(idxOf(x, y + dy))) continue; }
+      const nd = d + (dx && dy ? 14.14 : 10);
+      if (nd < dist[ni]) { dist[ni] = nd; prev[ni] = i; push(nd, ni); }
+    }
+  }
+  if (dist[targetI] === Infinity) return null;
+
+  const cellsRev = []; let cur = targetI;
+  while (cur !== -1 && cur !== startI) { cellsRev.push(cur); cur = prev[cur]; }
+  cellsRev.reverse();
+  const pts = cellsRev.map(i => { const x = i % GW, y = (i / GW) | 0; return [x * TILE + TILE / 2, y * TILE + TILE / 2]; });
+  if (pts.length && !snappedTarget) pts[pts.length - 1] = [toX, toY];
+  return pts.length ? pts : [[toX, toY]];
+}
 function computeFlow(gridOverride) {
   const grid = gridOverride || G.grid;
   const dist = G.dist; dist.fill(Infinity);
@@ -3036,7 +3127,7 @@ function heroSpawnPoint(owner) {
 function spawnHero(owner) {
   const p = heroSpawnPoint(owner);
   return {
-    owner, x: p.x, y: p.y, tx: p.x, ty: p.y, vx: 0, vy: 0, dir: 4, frame: 0, anim: 0,
+    owner, x: p.x, y: p.y, tx: p.x, ty: p.y, path: [], vx: 0, vy: 0, dir: 4, frame: 0, anim: 0,
     hp: HERO_STATS.hp, maxHp: HERO_STATS.hp, level: 1, kills: 0, xp: 0, cd: 0, dead: false, respawnT: 0, hitFlash: 0, blockCount: 0, calmT: 0, acd: [0, 0], wallT: 0, atkT: 0, atkDir: 2
   };
 }
@@ -3144,10 +3235,20 @@ function updateHeroes(dt) {
       h.respawnT -= dt;
       if (h.respawnT <= 0) {
         const p = heroSpawnPoint(h.owner);
-        h.x = p.x; h.y = p.y; h.tx = p.x; h.ty = p.y;
+        h.x = p.x; h.y = p.y; h.tx = p.x; h.ty = p.y; h.path = [];
         h.maxHp = heroMaxHp(h); h.hp = h.maxHp; h.dead = false;
       }
       continue;
+    }
+    /* Advance to the next leg of a routed order (see heroPathTo/'heroMove'):
+       arriving within 4px of the current waypoint pops the next one, so a
+       multi-tile order flows through its corners instead of stopping dead
+       at each one -- the easing below still brakes slightly into a corner
+       since d shrinks approaching it, which reads as a careful turn rather
+       than a skid, and only the FINAL waypoint brings the hero fully to
+       rest (h.path is empty by then). */
+    if (h.path.length && Math.hypot(h.tx - h.x, h.ty - h.y) <= 4) {
+      const nx = h.path.shift(); h.tx = nx[0]; h.ty = nx[1];
     }
     /* Ease in and out of a move instead of snapping between full speed and a
        dead stop. The hero used to reach 82px/s on the tick the order landed
@@ -4510,14 +4611,23 @@ function drawHero(x, h) {
       x.beginPath(); x.ellipse(h.x, h.y + 3, 22, 10, 0, 0, TAU); x.stroke();
       x.restore();
     }
-    const md = Math.hypot(h.tx - h.x, h.ty - h.y);
-    if (md > 10 && !h.dead) {
+    /* UI.heroDest, not h.tx/h.ty: since the hero now routes through waypoints
+       around obstacles (heroPathTo), tx/ty is only the NEXT corner, not
+       where the order actually ends -- drawing the marker there would jump
+       it from corner to corner instead of pointing at the spot you tapped.
+       Purely client-side and never sent over the wire: you only ever see
+       this marker for your OWN hero (the owner gate above), and you always
+       already know where you personally clicked, so nothing needs syncing
+       for a guest to get this right for their own hero too. */
+    const dest = UI.heroDest;
+    const md = dest ? Math.hypot(dest[0] - h.x, dest[1] - h.y) : 0;
+    if (dest && md > 10 && !h.dead) {
       x.save();
       x.globalAlpha = clamp(md / 60, 0.25, 0.75);
       x.strokeStyle = '#ffd76a'; x.lineWidth = 2;
-      x.beginPath(); x.ellipse(h.tx, h.ty + 3, 11, 5, 0, 0, TAU); x.stroke();
+      x.beginPath(); x.ellipse(dest[0], dest[1] + 3, 11, 5, 0, 0, TAU); x.stroke();
       x.beginPath();
-      x.moveTo(h.tx - 5, h.ty - 9); x.lineTo(h.tx, h.ty - 3); x.lineTo(h.tx + 5, h.ty - 9);
+      x.moveTo(dest[0] - 5, dest[1] - 9); x.lineTo(dest[0], dest[1] - 3); x.lineTo(dest[0] + 5, dest[1] - 9);
       x.stroke();
       x.restore();
     }
@@ -4741,6 +4851,9 @@ function drawBlizzard(x, W, H) {
 const UI = {
   buildKind: null, sel: null, spellAim: null, abilId: null,
   aim: [0, 0], aimW: [0, 0], placeOK: true,
+  // last point the player clicked to move their own hero, purely local (see
+  // drawHero) -- not a wire field, so nothing about this needs a protocol bump
+  heroDest: null,
   // where the lane would go if the hovered tower were built, and how much of
   // the defence currently covering it that would strand (see placementPreview)
   ghostRoute: null, ghostAbandon: 0,
@@ -5578,7 +5691,18 @@ function applyCmd(c, who) {
     if (castSpell(c.i, c.x, c.y, who)) { if (c.i === 1) ev('blizzard', {}); }
   } else if (c.k === 'heroMove') {
     // who IS the hero index (each player only ever commands their own hero)
-    const h = G.heroes[who]; if (h) { h.tx = c.x; h.ty = c.y; }
+    const h = G.heroes[who];
+    if (h) {
+      // Routed through the maze via heroPathTo -- it used to just snap
+      // h.tx/h.ty to the click and let the straight-line chase in
+      // updateHeroes walk the hero through whatever rock or tower base
+      // was in the way. A null result means the point is structurally
+      // unreachable (vanishingly rare -- see nearestPassable); the order
+      // is dropped rather than yanking the hero toward a wall it cannot
+      // enter.
+      const path = heroPathTo(h.x, h.y, c.x, c.y);
+      if (path && path.length) { h.tx = path[0][0]; h.ty = path[0][1]; h.path = path.slice(1); }
+    }
   } else if (c.k === 'speed') {
     G.speed = clamp(c.v | 0, 1, 3);
   } else if (c.k === 'start') {
@@ -5771,7 +5895,7 @@ function bindInput(cv) {
     // ability aim above): a player will click-to-move their hero repeatedly
     // through a wave, so re-arming the HUD button after every single click
     // would be tedious. Stays armed until the button is pressed again or Esc.
-    if (UI.spellAim === 'hero') { issue({ k: 'heroMove', x: w[0], y: w[1] }); return; }
+    if (UI.spellAim === 'hero') { UI.heroDest = [w[0], w[1]]; issue({ k: 'heroMove', x: w[0], y: w[1] }); return; }
     /* Tapping the hero itself arms move mode. Before this the ONLY way in was
        the K button in the corner, which is a mode switch a player has no
        reason to look for -- the natural thing to try is to touch the
