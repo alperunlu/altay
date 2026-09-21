@@ -201,6 +201,13 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
 'use strict';
 
 const TILE = 40, GW = 44, GH = 20;
+/* Target on-screen tile size for the portrait camera default -- see its use
+   in R.relayout(). Measured against 34/38px alternatives on a 390x844
+   reference phone; 36 reads clearly (towers and creeps are unmistakable)
+   while still keeping most of a map's 18 buildable rows in view at once
+   (larger phones see all of it; only very short ones like an SE need to pan
+   vertically near the top/bottom edges, which they already do horizontally). */
+const PORTRAIT_TILE_PX = 36;
 /* Co-op runs the exact same 30 waves as solo -- WAVES has no player-count term
    and the 20 lives are one shared pool -- so a second player is pure upside.
    Each player carries their own purse, which means two of them start the game
@@ -4007,10 +4014,20 @@ const R = {
     const availH = Math.max(160, this.H - M.top - M.bot);
     const zFit = Math.min(this.W / WORLD_W, availH / WORLD_H);
     const zCover = Math.max(this.W / WORLD_W, availH / WORLD_H);
-    // wide screens see the whole battlefield; tall phones zoom in and pan.
-    // portrait allows a deeper zoom so the 2.2:1 map fills the tall viewport
-    // instead of sitting in a thick letterbox.
-    this.cam.tz = Math.max(zFit, Math.min(zCover, M.portrait ? 0.84 : 0.62));
+    /* wide screens see the whole battlefield; tall phones zoom in and pan.
+       Portrait used to default to exactly zCover -- the SMALLEST zoom that
+       avoids letterboxing the height, i.e. the minimum safe zoom, not a
+       comfortable one. On a typical phone (390x844) that rendered every
+       tile at 27px, which read as a strategy-map overview, not a board you
+       could see towers and creeps on. PORTRAIT_TILE_PX is a deliberately
+       chosen comfortable size instead; Math.max with zCover keeps the
+       no-letterbox guarantee (and lets a tall/large screen like an iPad
+       exceed it on its own merits) while giving small phones a real floor.
+       This is purely a camera default -- world-space placement, range and
+       targeting math never reads cam.z, so it carries no balance effect. */
+    this.cam.tz = M.portrait
+      ? Math.max(zCover, PORTRAIT_TILE_PX / TILE)
+      : Math.max(zFit, Math.min(zCover, 0.62));
     // keep the player's own zoom, only re-clamping it into the new valid band
     this.cam.z = clamp(this.cam.z || this.cam.tz, this.cam.tz * 0.9, this.cam.tz * 3.2);
     this.viewTop = M.top; this.viewBot = M.viewBot; this.uiBot = M.bot;
