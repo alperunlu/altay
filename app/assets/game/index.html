@@ -36,6 +36,10 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
     backdrop-filter:blur(3px);z-index:20}
   .overlay.hidden{display:none}
   .gone{opacity:0;pointer-events:none;transition:opacity .5s ease}
+  /* The lobby card doubles as the room screen once a game is being set up.
+     "How to play" and the upgrade tree are main-menu doors, not part of
+     hosting or joining, so they are hidden while the card is in that role. */
+  #lobby.netMode #btnHelp,#lobby.netMode #btnMeta{display:none}
   .card{width:min(440px,92vw);padding:26px 24px 22px;border-radius:14px;
     background:linear-gradient(180deg,rgba(38,32,26,.97),rgba(12,12,16,.98));
     border:1px solid rgba(214,172,92,.55);
@@ -6341,6 +6345,13 @@ function closeLobby() { $('lobby').classList.add('hidden'); Audio2.init(); }
 /* The main menu's own progress line. Pulled out of the one-shot init block so
    returning to the lobby mid-session shows the map you just cleared instead of
    whatever the count was when the page loaded. */
+/* The lobby card has two jobs: the main menu, and the room screen that shows
+   the code and the connection status once you are hosting or joining. This
+   says which one it is currently doing. */
+function setLobbyMode(mode) {
+  $('lobby').classList.toggle('netMode', mode === 'net');
+  if (mode !== 'net') { $('joinRow').classList.add('hidden'); lobbyMsg(''); }
+}
 function refreshLobbyProgress() {
   const vl = $('verLine'); if (!vl) return;
   const pr = campaignProgress();
@@ -6351,7 +6362,7 @@ function leaveRun(target) {
   closeMenu(); $('help').classList.add('hidden'); $('meta').classList.add('hidden');
   UI.sel = null; UI.buildKind = null; UI.spellAim = null; UI.abilId = null;
   if (target === 'setup') openSetup('solo');
-  else { $('setup').classList.add('hidden'); $('lobby').classList.remove('hidden'); refreshLobbyProgress(); }
+  else { $('setup').classList.add('hidden'); $('lobby').classList.remove('hidden'); setLobbyMode('main'); refreshLobbyProgress(); }
 }
 function openMenu() { $('menu').classList.remove('hidden'); syncMenu(); }
 function closeMenu() { $('menu').classList.add('hidden'); }
@@ -6494,7 +6505,7 @@ function wireShell() {
   $('metaClose').onclick = () => $('meta').classList.add('hidden');
   $('btnSolo').onclick = () => openSetup('solo');
   $('btnHost').onclick = () => { $('joinRow').classList.add('hidden'); openSetup('host'); };
-  $('setupBack').onclick = () => { closeSetup(); $('lobby').classList.remove('hidden'); };
+  $('setupBack').onclick = () => { closeSetup(); $('lobby').classList.remove('hidden'); setLobbyMode('main'); };
   $('setupGo').onclick = async () => {
     if (setupMode === 'solo') {
       // dropping to solo must also close any room this machine was in, or a
@@ -6509,13 +6520,13 @@ function wireShell() {
     // exactly like before this screen existed. netHost() itself calls
     // resetRun(G.mapSeed) immediately, baking the chosen map right away.
     Audio2.init();
-    closeSetup(); $('lobby').classList.remove('hidden');
+    closeSetup(); $('lobby').classList.remove('hidden'); setLobbyMode('net');
     if (!secureOk()) return;
     if (!await ensurePeer()) { lobbyMsg(NOPEER); return; }
     lobbyMsg('Oda açılıyor…');
     netHost(randomCode());
   };
-  $('btnJoinShow').onclick = () => { $('joinRow').classList.remove('hidden'); $('codeIn').focus(); };
+  $('btnJoinShow').onclick = () => { setLobbyMode('net'); $('joinRow').classList.remove('hidden'); $('codeIn').focus(); };
   $('btnJoin').onclick = async () => {
     const code = ($('codeIn').value || '').trim().toUpperCase();
     if (code.length < 4) { lobbyMsg('Kod en az 4 karakter olmalı.'); return; }
