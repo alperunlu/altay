@@ -185,11 +185,16 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
       <li><b>Ağır</b> → Buz ve Yıldırım büyüsü iki kat vurur.</li>
       <li><b>Kale</b> → yalnızca Top Kulesi kırar; ok neredeyse işlemez.</li>
     </ul>
+    <h3>Kahraman</h3>
+    <p>Kapının önündeki savaşçı Alp senin kahramanın. Ona dokun, sonra gideceği yere dokun: yerdeki düşmanları durdurur ve onlarla dövüşür. Dövüştükçe seviye atlar; düşerse bir süre sonra dirilir. Kalkan Duvarı hasarı keser, Kasırga çevresini biçer.</p>
+    <h3>Dokunmatik</h3>
+    <p>Kule düğmesine dokun, sonra zemine dokun. Bir kuleye dokununca yükseltebilir, satabilir ya da hedefini değiştirebilirsin. İki parmakla yakınlaştır, tek parmakla kaydır.</p>
     <h3>Tuşlar</h3>
     <p><kbd>1</kbd>–<kbd>5</kbd> kule seç · <kbd>U</kbd> yükselt · <kbd>S</kbd> sat · <kbd>X</kbd> hedefleme · <kbd>Q</kbd> yıldırım · <kbd>W</kbd> kara kış · <kbd>Boşluk</kbd> dalgayı erken çağır (bonus altın) · <kbd>+</kbd>/<kbd>−</kbd> hız · <kbd>Esc</kbd> iptal</p>
     <h3>Birlikte oyna</h3>
     <p>Oda kuran kodu paylaşır, diğer oyuncu kodu girer. Canlar ortak, altın ayrıdır — kendi kulelerini kendin yükseltirsin.</p>
     <button class="primary" id="helpClose">Anladım</button>
+    <button class="ghost" id="btnTutReplay">Öğreticiyi yeniden oyna</button>
   </div>
 </div>
 
@@ -3338,7 +3343,9 @@ function simTick() {
   for (const s of G.spell) if (s.cd > 0) s.cd--;
 
   if (G.phase === 'prep') {
-    G.prepTimer--;
+    // the tutorial holds the clock while it is walking the player through a
+    // step, so a first-timer is never ambushed by wave 1 mid-sentence
+    if (!TUT.holdPrep()) G.prepTimer--;
     if (G.prepTimer <= 0) startWave();
   }
   if (G.phase === 'wave') {
@@ -5144,6 +5151,8 @@ function drawHUD(x, W, H) {
   });
   UI.toasts = UI.toasts.filter(t => t.life > 0);
 
+  TUT.draw(x, W, H);
+
   /* ---- end screens ---- */
   if (G.phase === 'over' || G.phase === 'won') drawEndScreen(x, W, H, S);
 }
@@ -5283,6 +5292,8 @@ function drawHUDPortrait(x, W, H, M) {
     x.restore();
   });
   UI.toasts = UI.toasts.filter(t => t.life > 0);
+
+  TUT.draw(x, W, H);
 
   if (G.phase === 'over' || G.phase === 'won') drawEndScreen(x, W, H, M.S);
 }
@@ -5641,6 +5652,7 @@ function selectBuild(k) {
   UI.buildKind = k; UI.sel = null; UI.spellAim = null; UI.abilId = null; Audio2.play('ui');
 }
 function issue(cmd) {
+  TUT.onCmd(cmd);
   if (!NET.active || NET.isHost) applyCmd(cmd, NET.me);
   else NET.send({ t: 'cmd', c: cmd });
 }
@@ -5687,6 +5699,7 @@ function resetRun(seed) {
   bakeTerrain(G.grid);
   R.fitCamera();
   NET.gridDirty = true;
+  TUT.onRunStart();
 }
 function applyCmd(c, who) {
   // 'restart' must work even when the run has ended (G.phase 'over'/'won' is
@@ -5805,6 +5818,333 @@ function triggerSpell(i) {
   if (i === 1) { issue({ k: 'spell', i: 1, x: 0, y: 0 }); Audio2.play('ui'); }
   else { UI.spellAim = UI.spellAim === 0 ? null : 0; UI.buildKind = null; Audio2.play('ui'); }
 }
+
+/* ============================================================
+   TUTORIAL + CONTEXTUAL HINTS
+   A first-run walkthrough and a set of one-time hints. The game used to
+   open on a full board with a 30-second clock and the single line "Kule
+   seç, labirent ör, kapıyı koru." -- nothing said that towers reroute the
+   lane, that the hero is a unit you move, or that flyers ignore the maze
+   until they had already cost you the run.
+   Purely local presentation: it reads G and UI, never writes simulation
+   state, and its only hook into the sim is holdPrep(), which pauses the
+   prep clock in solo while a step is waiting on the player. Hints run for
+   everyone, guests included; the walkthrough runs in solo only.
+   ============================================================ */
+/* Each step: what to say, what to point at, and when it is satisfied.
+   `back` returns the step to fall back to when the player undid the thing
+   the step relies on (deselected the tower, disarmed hero mode), or -1.
+   Steps are advanced by the player's own actions, never by a timer, except
+   the ones with a button. */
+const TUT_STEPS = [
+  { title: 'Kapıyı tut', btn: 'Devam',
+    body: 'Erlik\'in ordusu soldaki yarıktan çıkıp sağdaki kapıya yürür. Kapıya ulaşan her düşman can götürür.',
+    focus: () => ({ w: [(GW - 1) * TILE - 6, G.exit.gy * TILE + TILE / 2], r: 64 }) },
+  { title: 'Kule seç', body: 'Aşağıdan Ok Kulesi\'ne dokun.',
+    focus: () => ({ rect: 'barrow' }), done: () => !!UI.buildKind },
+  { title: 'Kuleyi kur', body: 'Yolun yanında parlayan kareye dokun. Kule oraya kurulur.',
+    focus: () => TUT.cellFocus(0.30, false),
+    done: () => G.towers.length >= 1 || G.gold[NET.me] < TOWERS.arrow.cost,
+    back: () => UI.buildKind ? -1 : 1 },
+  { title: 'Labirent ör',
+    body: 'Kuleler yolu keser, düşman etraflarından dolaşır. Rota uzadıkça daha uzun süre ateş altında kalırlar. Parlayan kareye bir kule daha kur ve yolun nasıl değiştiğine bak.',
+    focus: () => UI.buildKind ? TUT.cellFocus(0.55, true) : { rect: 'barrow' },
+    done: () => G.towers.length >= 2 || G.gold[NET.me] < TOWERS.arrow.cost },
+  { title: 'Savaş başlasın', body: 'Hazır olunca Dalgayı Çağır\'a dokun. Erken çağırırsan bonus altın alırsın.',
+    focus: () => ({ rect: 'start' }), done: () => G.phase === 'wave' },
+  { title: 'İlk dalga', free: true, body: 'Kuleler kendiliğinden ateş eder. Ölen her düşman altın bırakır.',
+    done: () => G.waveIdx >= 1 && G.phase === 'prep' },
+  { title: 'Yükselt', body: 'Kurduğun bir kuleye dokun.',
+    focus: () => TUT.towerFocus(), done: () => !!UI.sel || G.gold[NET.me] < TOWERS.arrow.lv[1].cost },
+  { title: 'Yükselt', body: 'YÜKSELT\'e dokun: daha çok hasar, daha uzun menzil.',
+    focus: () => ({ rect: 'up' }),
+    done: () => G.towers.some(t => t.lvl >= 1) || G.gold[NET.me] < TOWERS.arrow.lv[1].cost,
+    back: () => UI.sel ? -1 : 6 },
+  { title: 'Kahramanın: Alp', body: 'Kapının önündeki savaşçı senin kahramanın. Ona ya da K düğmesine dokun.',
+    focus: () => TUT.heroFocus(), done: () => UI.spellAim === 'hero' },
+  { title: 'Kahramanı gönder',
+    body: 'Şimdi yolun üstünde bir yere dokun. Alp oraya yürür, yerdeki düşmanları durdurur ve onlarla dövüşür.',
+    focus: () => TUT.routeFocus(0.62), done: () => TUT.heroMoved,
+    back: () => UI.spellAim === 'hero' ? -1 : 8 },
+  { title: 'Kahramanın yetenekleri', btn: 'Tamam',
+    body: 'Kalkan Duvarı gelen hasarı keser ve daha çok düşman tutar; Kasırga çevresindekileri biçer. Alp dövüştükçe seviye atlar, düşerse bir süre sonra dirilir.',
+    focus: () => ({ rects: ['habil0', 'habil1'] }) },
+  { title: 'Gerisi senin', btn: 'Başla',
+    body: 'Üstteki şerit sıradaki dalgayı ve zırhını gösterir. 4. dalgada uçanlar geliyor: labirenti umursamazlar.' }
+];
+const TUT_FREE = TUT_STEPS.findIndex(s => s.free);   // the wave-1 step, the one that lets the clock run
+/* One-time hints, checked in order; the first unseen one whose condition
+   holds is shown, one at a time. Marked seen the moment it appears, so a
+   player who closes the app mid-hint is not shown it again. */
+function nextWaveAirShare() {
+  const w = WAVES[G.waveIdx]; if (!w) return 0;
+  let air = 0, all = 0;
+  for (const g of w.groups) { all += g.count; if (CREEPS[g.type].air) air += g.count; }
+  return all ? air / all : 0;
+}
+const HINTS = [
+  { id: 'hero', title: 'Kahramanın boşta',
+    body: 'Alp kapıda bekliyor. Ona dokun, sonra yola dokun: yerdeki düşmanları durdurur ve dövüştükçe güçlenir.',
+    when: () => G.phase === 'prep' && G.waveIdx >= 2 && !TUT.heroMoved && G.heroes[NET.me] && !G.heroes[NET.me].dead,
+    focus: () => TUT.heroFocus() },
+  { id: 'air', title: 'Uçan düşman',
+    body: 'Uçanlar labirenti umursamaz, dümdüz kapıya uçar. Top Kulesi onları vuramaz; Ok, Buz, Zehir ve Yıldırım vurur.',
+    when: () => G.creeps.some(c => c.air && !c.dead) },
+  { id: 'leak', title: 'Kapıdan sızdı',
+    body: 'Kapıya ulaşan her düşman can götürür. Rotayı uzat ya da kulelerini yükselt.',
+    when: () => G.leaked > 0 },
+  { id: 'boss', title: 'Patron geliyor',
+    body: 'Kapıya ulaşırsa 5 can götürür. Tengri Yıldırımı ve Kara Kış\'ı ona sakla, kahramanını yoluna çıkar.',
+    when: () => G.creeps.some(c => c.boss && !c.dead) },
+  { id: 'basci', title: 'Kara Bakşı',
+    body: 'Menzilindeki kuleleri birkaç saniye susturur. Labirente girmeden indirmeye çalış.',
+    when: () => G.creeps.some(c => c.type === 'basci' && !c.dead) },
+  { id: 'kale', title: 'Kale zırhı',
+    body: 'Tepegöz\'ün zırhına ok ve büyü neredeyse işlemez. Kale zırhını Top Kulesi ezer.',
+    when: () => G.creeps.some(c => c.armor === 4 && !c.boss && !c.dead) },
+  { id: 'umay', title: 'Umay Ana',
+    body: 'Yakınındaki yaralıları iyileştirir. Önce onu düşür.',
+    when: () => G.creeps.some(c => c.type === 'umay' && !c.dead) },
+  { id: 'split', title: 'Yelbegen',
+    body: 'Öldüğünde iki yavruya bölünür. Alan hasarı (Top, Zehir) yavruları temizler.',
+    when: () => G.creeps.some(c => c.type === 'yelbegen' && !c.dead) },
+  { id: 'branch', title: 'Uzmanlaşma',
+    body: 'En üst seviyedeki kule iki daldan birine ayrılabilir. Kuleye dokun ve bir dal seç; seçim kalıcıdır.',
+    when: () => G.towers.some(t => t.owner === NET.me && t.lvl === 2 && t.branch == null) },
+  { id: 'airwave', title: 'Hava saldırısı',
+    body: 'Sıradaki dalga çoğunlukla havadan geliyor. Labirent onları yavaşlatmaz: kapıya yakın, havayı vuran kuleler kur.',
+    when: () => G.phase === 'prep' && G.waveIdx >= 10 && nextWaveAirShare() >= 0.5 }
+];
+/* Which of the above this DEVICE has already seen, plus whether the
+   walkthrough is done. Kept in its own localStorage key rather than in META:
+   META is the player's progression (it is handed to the native side and to a
+   co-op host), while "has this screen been shown the tips" is a property of
+   the device. If storage is unavailable the worst case is seeing a tip twice. */
+const TIPS_KEY = 'altay_tips_v1';
+const TIPS = {
+  tut: 0, seen: {},
+  load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TIPS_KEY));
+      if (raw && typeof raw === 'object') { this.tut = raw.tut | 0; this.seen = raw.seen || {}; }
+    } catch (e) { }
+  },
+  save() {
+    try { localStorage.setItem(TIPS_KEY, JSON.stringify({ tut: this.tut, seen: this.seen })); } catch (e) { }
+  }
+};
+TIPS.load();
+function wrapLines(x, s, maxW, size) {
+  x.font = `600 ${size}px system-ui`;
+  const out = []; let line = '';
+  for (const wd of s.split(' ')) {
+    const t = line ? line + ' ' + wd : wd;
+    if (line && x.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t;
+  }
+  if (line) out.push(line);
+  return out;
+}
+const TUT = {
+  step: -1, hint: null, heroMoved: false,
+  cell: null, cellKey: '', camStep: -1,
+  running() { return this.step >= 0; },
+  /* The clock only stops for the walkthrough, only in solo, and not during
+     the one step that is about watching wave 1 play out. */
+  holdPrep() { return this.step >= 0 && this.step !== TUT_FREE && !NET.active; },
+  seen(id) { return !!TIPS.seen[id]; },
+  markSeen(id) {
+    if (TIPS.seen[id]) return;
+    TIPS.seen[id] = 1; TIPS.save();
+  },
+  onRunStart() {
+    this.hint = null; this.heroMoved = false; this.cell = null; this.cellKey = ''; this.camStep = -1;
+    this.step = (!NET.active && !TIPS.tut) ? 0 : -1;
+  },
+  onCmd(c) { if (c.k === 'heroMove') this.heroMoved = true; },
+  finish() {
+    this.step = -1;
+    TIPS.tut = 1;
+    // the walkthrough already taught the hero; do not nag about it at wave 3
+    TIPS.seen.hero = 1;
+    TIPS.save();
+  },
+  advance() {
+    this.step++;
+    if (this.step >= TUT_STEPS.length) this.finish();
+  },
+  /* From the help screen. Starts at once if a solo run is still sitting at
+     its very first prep; otherwise it waits for the next run. Only the
+     walkthrough is reset -- the contextual hints stay once per device. */
+  replay() {
+    TIPS.tut = 0; TIPS.save();
+    const fresh = !NET.active && G.waveIdx === 0 && G.phase === 'prep' && G.towers.length === 0 &&
+      document.getElementById('lobby').classList.contains('hidden');
+    if (fresh) { this.step = 0; this.hint = null; UI.toast('Öğretici başladı', '#ffd76a'); }
+    else UI.toast('Öğretici bir sonraki oyunda başlayacak', '#ffd76a');
+  },
+  update(dt) {
+    if (this.step >= 0) {
+      if (G.phase === 'over' || G.phase === 'won' || NET.active) { this.finish(); return; }
+      // the player can run ahead of the script (call the wave early, say);
+      // jump forward rather than asking for something that already happened
+      if (G.phase === 'wave' && this.step < TUT_FREE) this.step = TUT_FREE;
+      if (G.waveIdx >= 1 && this.step < TUT_FREE + 1) this.step = TUT_FREE + 1;
+      const st = TUT_STEPS[this.step];
+      if (st.done && st.done()) this.advance();
+      else if (st.back) { const b = st.back(); if (b >= 0) this.step = b; }
+      if (this.step >= 0 && this.camStep !== this.step) { this.camStep = this.step; this.reveal(); }
+    }
+    if (this.hint) {
+      this.hint.t += dt;
+      if (this.hint.t > 11) this.hint = null;
+    }
+    if (this.step < 0 && !this.hint && G.phase !== 'over' && G.phase !== 'won' && booted &&
+        document.getElementById('lobby').classList.contains('hidden')) {
+      for (const h of HINTS) {
+        if (this.seen(h.id) || !h.when()) continue;
+        this.markSeen(h.id);
+        this.hint = { h, t: 0 };
+        break;
+      }
+    }
+  },
+  /* Portrait zooms in and pans, so the thing a step points at can be off
+     screen. Move the camera to it once, when the step starts -- not every
+     frame, which would fight the player's own panning. */
+  reveal() {
+    const st = TUT_STEPS[this.step]; if (!st || !st.focus) return;
+    const f = st.focus(); if (!f) return;
+    let wx, wy;
+    if (f.cell) { wx = f.cell[0] * TILE + TILE / 2; wy = f.cell[1] * TILE + TILE / 2; }
+    else if (f.w) { wx = f.w[0]; wy = f.w[1]; }
+    else return;
+    const s = R.worldToScreen(wx, wy);
+    if (s[0] > 40 && s[0] < R.W - 40 && s[1] > R.viewTop + 30 && s[1] < R.H - R.viewBot - 30) return;
+    R.cam.x = wx; R.cam.y = wy; clampCam();
+  },
+  /* A buildable tile along the live route, `frac` of the way from spawn to
+     gate. onRoute picks a tile the lane itself runs through, which is what
+     shows the maze mechanic: the chevrons visibly swing around the new
+     tower. Otherwise it picks a tile beside the lane. Cached until a tower
+     goes down, since canPlace runs a flow solve. */
+  cellFocus(frac, onRoute) {
+    const key = G.towers.length + ':' + frac + ':' + onRoute;
+    const stale = !this.cell || G.grid[idxOf(this.cell[0], this.cell[1])] !== 0;
+    if (this.cellKey !== key || stale) { this.cell = this.suggestCell(frac, onRoute); this.cellKey = key; }
+    return this.cell ? { cell: this.cell } : null;
+  },
+  suggestCell(frac, onRoute) {
+    const route = routeTiles(); if (route.length < 3) return null;
+    const offs = onRoute ? [[0, 0], [0, -1], [0, 1]] : [[0, -1], [0, 1], [0, -2], [0, 2]];
+    const mid = Math.floor(frac * (route.length - 1));
+    for (let k = 0; k < route.length; k++) {
+      const i = mid + (k % 2 ? -((k + 1) >> 1) : (k >> 1));
+      if (i < 0 || i >= route.length) continue;
+      for (const [dx, dy] of offs) {
+        const gx = route[i][0] + dx, gy = route[i][1] + dy;
+        if (gx < 3 || gx > GW - 4 || !inGrid(gx, gy) || G.grid[idxOf(gx, gy)] !== 0) continue;
+        if (canPlace(gx, gy)) return [gx, gy];
+      }
+    }
+    return null;
+  },
+  towerFocus() {
+    const t = G.towers.find(q => q.owner === NET.me);
+    return t ? { w: [t.x, t.y - 12], r: 28 } : null;
+  },
+  heroFocus() {
+    const h = G.heroes[NET.me];
+    return h && !h.dead ? { w: [h.x, h.y - 26], r: 34, rect: 'hero' } : { rect: 'hero' };
+  },
+  routeFocus(frac) {
+    const route = routeTiles(); if (!route.length) return null;
+    const p = route[Math.floor(frac * (route.length - 1))];
+    return { w: [p[0] * TILE + TILE / 2, p[1] * TILE + TILE / 2], r: 24 };
+  },
+  /* Draws the focus marker(s) and returns the screen y of the main one, so
+     the card can sit on the other half of the map and never cover it. */
+  drawFocus(x, f) {
+    const pulse = 0.5 + 0.5 * Math.sin(R.time * 5);
+    let fy = null;
+    x.save();
+    x.strokeStyle = `rgba(255,215,106,${(0.55 + 0.45 * pulse).toFixed(3)})`; x.lineWidth = 3;
+    if (f.cell) {
+      const z = R.cam.z, [sx, sy] = R.worldToScreen(f.cell[0] * TILE, f.cell[1] * TILE), sz = TILE * z;
+      x.fillStyle = `rgba(120,255,160,${(0.16 + 0.22 * pulse).toFixed(3)})`;
+      x.fillRect(sx, sy, sz, sz);
+      x.strokeStyle = `rgba(150,255,180,${(0.6 + 0.4 * pulse).toFixed(3)})`;
+      x.strokeRect(sx + 1, sy + 1, sz - 2, sz - 2);
+      this.arrow(x, sx + sz / 2, sy - 4);
+      fy = sy + sz / 2;
+    }
+    if (f.w) {
+      const [sx, sy] = R.worldToScreen(f.w[0], f.w[1]), rr = Math.max(16, f.r * R.cam.z);
+      x.beginPath(); x.arc(sx, sy, rr + pulse * 4, 0, TAU); x.stroke();
+      this.arrow(x, sx, sy - rr - 6);
+      fy = sy;
+    }
+    const ids = f.rects || (f.rect ? [f.rect] : []);
+    for (const id of ids) {
+      const r = UI.rects.find(q => q.id === id); if (!r) continue;
+      x.strokeStyle = `rgba(255,215,106,${(0.55 + 0.45 * pulse).toFixed(3)})`;
+      roundRect(x, r.x - 4, r.y - 4, r.w + 8, r.h + 8, 9); x.stroke();
+      if (fy === null) { this.arrow(x, r.x + r.w / 2, r.y - 8); fy = r.y + r.h / 2; }
+    }
+    x.restore();
+    return fy;
+  },
+  arrow(x, tx, ty) {
+    const b = Math.abs(Math.sin(R.time * 4)) * 7;
+    x.save();
+    x.fillStyle = '#ffd76a'; x.strokeStyle = 'rgba(0,0,0,0.7)'; x.lineWidth = 1.5;
+    x.beginPath();
+    x.moveTo(tx, ty - b); x.lineTo(tx - 9, ty - b - 13); x.lineTo(tx + 9, ty - b - 13);
+    x.closePath(); x.fill(); x.stroke();
+    x.restore();
+  },
+  draw(x, W, H) {
+    if (G.phase === 'over' || G.phase === 'won') return;
+    let card = null;
+    if (this.step >= 0) {
+      const st = TUT_STEPS[this.step];
+      card = { title: st.title, body: st.body, btn: st.btn, focus: st.focus ? st.focus() : null, tut: true };
+    } else if (this.hint) {
+      const h = this.hint.h;
+      card = { title: h.title, body: h.body, btn: 'Tamam', focus: h.focus ? h.focus() : null, tut: false };
+    }
+    if (!card) return;
+    const s = clamp(UI.scale || 1, 0.85, 1.1);
+    const fy = card.focus ? this.drawFocus(x, card.focus) : null;
+    const cw = Math.min(460 * s, W - 24), pad = 10 * s;
+    const titleSize = 13 * s, bodySize = 11.5 * s, lh = 15 * s, btnH = 30 * s;
+    const lines = wrapLines(x, card.body, cw - pad * 2, bodySize);
+    const ch = pad + titleSize + 7 * s + lines.length * lh + (card.btn ? 6 * s + btnH : 0) + pad;
+    const top = UI.hudBottom + 8, bottom = UI.hudTop - 8;
+    const cy = (fy !== null && fy < (top + bottom) / 2) ? bottom - ch : top;
+    const cx = (W - cw) / 2;
+    panel(x, cx, cy, cw, ch, { gold: true, hi: true, r: 10 });
+    txt(x, card.title, cx + pad, cy + pad + titleSize / 2, titleSize, '#ffe0a0', 'left', 800);
+    lines.forEach((ln, i) => txt(x, ln, cx + pad, cy + pad + titleSize + 7 * s + lh * (i + 0.5), bodySize, '#e6dcc4', 'left', 600, 'system-ui'));
+    // buttons first, card last: rects are hit-tested in insertion order, and
+    // the card's own rect exists only so a tap on it is not read as "build
+    // a tower on the map underneath"
+    if (card.tut) {
+      txt(x, `${this.step + 1}/${TUT_STEPS.length} · Geç`, cx + cw - pad, cy + pad + titleSize / 2, 10 * s, '#a89f8a', 'right', 700, 'system-ui');
+      addRect('tutSkip', cx + cw - 90 * s, cy, 90 * s, Math.max(TOUCH_MIN, pad * 2 + titleSize), () => { this.finish(); Audio2.play('ui'); });
+    }
+    if (card.btn) {
+      const bw = 104 * s, bx = cx + cw - pad - bw, by = cy + ch - pad - btnH;
+      panel(x, bx, by, bw, btnH, { gold: true, hi: true, r: 7 });
+      txt(x, card.btn, bx + bw / 2, by + btnH / 2, 11.5 * s, '#ffe08a', 'center', 800);
+      const hy = by + btnH / 2 - Math.max(TOUCH_MIN, btnH) / 2;
+      addRect('tutBtn', bx, hy, bw, Math.max(TOUCH_MIN, btnH), () => {
+        Audio2.play('ui');
+        if (this.step >= 0) this.advance(); else this.hint = null;
+      });
+    }
+    addRect('tutCard', cx, cy, cw, ch, () => {});
+  }
+};
 
 /* ============================================================
    INPUT
@@ -6443,6 +6783,7 @@ function loop(ts) {
     }
     if (G.prepTimer > 0) G.prepTimer -= dt * TICK_HZ;
   }
+  TUT.update(dt);
   FX.update(dt);
   decalAcc += dt; if (decalAcc > 0.5) { decalAcc = 0; FX.fadeDecals(); }
   Audio2.setIntensity(clamp(G.creeps.length / 26, 0, 1) * (G.phase === 'wave' ? 1 : 0.25));
@@ -6722,6 +7063,7 @@ function wireShell() {
   $('mHelp').onclick = () => { $('help').classList.toggle('hidden'); };
   $('mMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
   $('helpClose').onclick = () => $('help').classList.add('hidden');
+  $('btnTutReplay').onclick = () => { $('help').classList.add('hidden'); closeMenu(); TUT.replay(); };
   $('btnHelp').onclick = () => $('help').classList.remove('hidden');
   document.addEventListener('contextmenu', e => e.preventDefault());
 }
