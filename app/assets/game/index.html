@@ -312,6 +312,14 @@ function mixHex(c1, c2, t) {
   return [r, g, b];
 }
 function shade(c, f) { return [clamp(c[0] * f, 0, 255), clamp(c[1] * f, 0, 255), clamp(c[2] * f, 0, 255)]; }
+// Darken/lighten a '#rrggbb' STRING by f, returning a css colour string --
+// shade()/mixHex() above both take [r,g,b] arrays (OWNER_COL and friends are
+// hex strings), so this is the missing conversion, not a duplicate of them.
+function shadeHex(hex, f) {
+  const n = parseInt(hex.slice(1), 16), c = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  const s = shade(c, f);
+  return rgb(s[0], s[1], s[2]);
+}
 
 /* ---------- offscreen canvas helper ---------- */
 function makeCanvas(w, h) {
@@ -4597,6 +4605,24 @@ function drawCreep(x, c) {
 }
 function drawHero(x, h) {
   const sheet = R.sprites.hero; if (!sheet) return;
+  /* Owner ring, ground level, under the sprite. Every OTHER shared actor in
+     the game already carries this -- towers get a 3px owner pip (see
+     drawTower), purses and the lobby's player list get an OWNER_COL dot --
+     but the hero sprite itself never did, and now that it is one bought
+     character sheet instead of four procedurally-recoloured ones, all four
+     players' heroes are pixel-identical. In 2-4 player co-op, with heroes
+     free to wander the same battlefield and stack near a breach together,
+     there was nothing to tell them apart by. Gated on NET.active, same as
+     the tower pip -- solo has exactly one hero, nothing to disambiguate. */
+  if (NET.active) {
+    const col = OWNER_COL[h.owner % OWNER_COL.length];
+    x.save();
+    x.strokeStyle = col; x.lineWidth = 2.4; x.globalAlpha = 0.9;
+    x.beginPath(); x.ellipse(h.x, h.y + 2, HERO_DEF.s * 0.56, HERO_DEF.s * 0.27, 0, 0, TAU); x.stroke();
+    x.strokeStyle = 'rgba(0,0,0,0.55)'; x.lineWidth = 1; x.globalAlpha = 1;
+    x.beginPath(); x.ellipse(h.x, h.y + 2, HERO_DEF.s * 0.56, HERO_DEF.s * 0.27, 0, 0, TAU); x.stroke();
+    x.restore();
+  }
   /* Two bits of feedback the control scheme was missing entirely: that the
      hero is the thing your next tap will command, and where you already sent
      it. Without them a click-to-move hero is indistinguishable from a hero
@@ -4663,8 +4689,18 @@ function drawHero(x, h) {
   const bx = h.x - w / 2, by = h.y - 95;
   const f = clamp(h.hp / h.maxHp, 0, 1);
   x.fillStyle = 'rgba(0,0,0,0.62)'; x.fillRect(bx - 1, by - 1, w + 2, hgt + 2);
+  // Owner-coloured in co-op (matches the ground ring above), so the bar you
+  // are already glancing at to check a hero's health also tells you whose
+  // it is. Solo keeps the original blue -- there is only ever one hero, and
+  // OWNER_COL[0] is not quite the same blue, so this avoids an unreviewed
+  // cosmetic change to the one mode nobody asked to have changed.
   const g = x.createLinearGradient(bx, by, bx, by + hgt);
-  g.addColorStop(0, '#8ad6ff'); g.addColorStop(1, '#2e6fa0');
+  if (NET.active) {
+    const col = OWNER_COL[h.owner % OWNER_COL.length];
+    g.addColorStop(0, col); g.addColorStop(1, shadeHex(col, 0.55));
+  } else {
+    g.addColorStop(0, '#8ad6ff'); g.addColorStop(1, '#2e6fa0');
+  }
   x.fillStyle = g; x.fillRect(bx, by, w * f, hgt);
   x.strokeStyle = 'rgba(255,255,255,0.3)'; x.lineWidth = 0.6; x.strokeRect(bx + 0.3, by + 0.3, w - 0.6, hgt - 0.6);
   x.fillStyle = '#ffe7b0'; x.font = '700 9px system-ui'; x.textAlign = 'center';
