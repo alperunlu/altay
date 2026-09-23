@@ -35,6 +35,22 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
     background:radial-gradient(ellipse at 50% 40%,rgba(30,22,16,.72),rgba(6,8,12,.95));
     backdrop-filter:blur(3px);z-index:20}
   .overlay.hidden{display:none}
+  /* A card taller than the screen (the pause menu is ~600px, a landscape
+     phone ~375-430px) used to be clipped top and bottom with no way to reach
+     the buttons off either edge. Top-aligned + margin:auto still centres a
+     card that fits, and lets one that does not scroll from its top. The
+     scroll needs its own touch-action: html/body are touch-action:none. */
+  .overlay:not(#boot){align-items:flex-start;overflow-y:auto;padding:10px 0;
+    touch-action:pan-y;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+  .overlay > .card{margin:auto}
+  @media (max-height:520px){
+    .card{padding:14px 18px 12px}
+    h1{font-size:24px}
+    .kicker{margin-bottom:8px}
+    p.lead{display:none}
+    button{padding:9px 12px;margin:5px 0}
+    #lobbyMsg{min-height:0;margin-top:6px}
+  }
   .gone{opacity:0;pointer-events:none;transition:opacity .5s ease}
   /* The lobby card doubles as the room screen once a game is being set up.
      "How to play" and the upgrade tree are main-menu doors, not part of
@@ -113,7 +129,8 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
     <div class="kicker">Gök Kapısını Tut</div>
     <p class="lead">Erlik'in orduları bozkırdan yürüyor. Kulelerinle labirent ör, otuz iki dalgayı geri püskürt, kapıyı düşürme.</p>
     <button class="primary" id="btnSolo">Tek başına oyna</button>
-    <button id="btnHost">Oda kur</button>
+    <button id="btnHost">Çok Kişilik Oyun</button>
+    <button id="btnDuel">Düello (1'e 1)</button>
     <button id="btnJoinShow">Odaya katıl</button>
     <div class="row hidden" id="joinRow">
       <input id="codeIn" maxlength="6" placeholder="KOD" autocomplete="off">
@@ -219,6 +236,34 @@ const PORTRAIT_TILE_PX = 36;
    with 680 gold against a solo player's 340. Give each side a smaller purse so
    the pair opens near, but still a little above, the solo economy. */
 const SOLO_START_GOLD = 340, COOP_START_GOLD = 200;
+/* Duel (1v1). The map splits into two mirrored lanes, player 0 on top and
+   player 1 underneath, with a rock wall between. Both lanes get the same
+   base wave every round, and on top of it each player can buy units that
+   march down the OTHER lane. Every send permanently raises the sender's
+   per-round income, which is the whole tension: gold spent attacking is gold
+   not spent defending, but it pays back later. Each duel player faces a full
+   solo-sized wave, so each gets a full solo purse. */
+const DUEL = {
+  lives: 20, prepSec: 20, seed: 1071,
+  spawnGy: [4, 15],        // lane 0 rows 1..8, lane 1 rows 11..18 (mirror: y -> GH-1-y)
+  sendGap: 14,             // ticks between two sent units leaving the rift
+  sendHpMul: 0.6,          // of what the same unit weighs in the current base wave
+  sendBountyFrac: 0.2,     // share of the send's price the defender earns back by killing it
+  /* Extra HP per round on top of the campaign curve. Without it two even
+     players ran the full campaign -- measured 17-18 minutes of pure wave
+     time between two bots, before any prep pauses. A duel should be decided
+     by who spends better, not by who outlasts the campaign. */
+  hpRamp: 0.04
+};
+/* What can be sent. `inc` is added to the sender's income every round from
+   then on; roughly 10% of the price, so a send pays for itself in ten rounds. */
+const SENDS = [
+  { type: 'kobold', n: 6, cost: 50, inc: 5 },
+  { type: 'ghoul', n: 5, cost: 90, inc: 9 },
+  { type: 'harpy', n: 4, cost: 130, inc: 13 },
+  { type: 'basci', n: 2, cost: 170, inc: 17 },
+  { type: 'ogre', n: 2, cost: 240, inc: 24 }
+];
 /* rows held clear of rock so the maze has a northern and a southern detour */
 /* Rows kept permanently rock-free so the maze can detour around the middle
    corridor. Deliberately NOT the outermost rows: a lane hugging the map
@@ -249,7 +294,9 @@ const LANE_ROWS = [4, 15];
    corruption, and OTA updates (where clients legitimately sit on different
    bundles for a while) make it MORE likely, not less. */
 const APP_VERSION = '1.0.0';
-const NET_PROTOCOL = 4;
+// 5: duel mode -- hello carries the room's mode, creeps gained lane/sentBy
+// slots, and the snapshot a `du` block
+const NET_PROTOCOL = 5;
 const HANDSHAKE_MS = 5000;   // a guest that hasn't identified itself by now is too old to talk to
 
 const MAX_PLAYERS = 4;
@@ -569,12 +616,13 @@ const Terrain = { cv: null, ready: false };
    bakeTerrain() runs. This is the lane the map is built around, so it is what
    gets a baked road; once the player mazes, the LIVE route diverges from it
    and drawPathHint()'s animated chevrons are what track that. */
-function baseRoute() {
+function baseRoute(lane) {
+  const sp = laneSpawn(lane || 0), ex = laneExit(lane || 0);
   const pts = [];
-  let gx = G.spawn.gx, gy = G.spawn.gy, guard = 0;
+  let gx = sp.gx, gy = sp.gy, guard = 0;
   while (guard++ < GW * GH) {
     pts.push([gx * TILE + TILE / 2, gy * TILE + TILE / 2]);
-    if (gx === G.exit.gx && gy === G.exit.gy) break;
+    if (gx === ex.gx && gy === ex.gy) break;
     let bd = G.dist[idxOf(gx, gy)], bx = -1, by = -1;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       if (!dx && !dy) continue;
@@ -804,7 +852,7 @@ function bakeTerrain(grid) {
   // left the whole playfield reading as undifferentiated grass -- the player
   // could not see the lane they were defending. It now follows the real
   // tower-free flow route (see baseRoute) and is painted as worn dirt.
-  paintRoad(x, baseRoute());
+  for (let l = 0; l < laneCount(); l++) paintRoad(x, baseRoute(l));
 
   // ---- cliffs: one merged organic rock mass, never a grid of squares ----
   // Everything below is driven off TWO union masks (rock face + plateau top) built
@@ -2235,7 +2283,9 @@ const CREEPS = {
     pal: { body: [92, 46, 52], limb: [74, 38, 44], armor: [88, 74, 96], accent: [255, 120, 80], horn: [60, 54, 66] }
   },
   wyrm: {
-    name: 'Gök Ejder', hpMul: 9, armor: 3, air: true, speed: 50, px: 146, s: 74, leg: 0.24, head: 0.16, big: true, boss: true,
+    // speed 50 -> 40: a boss that crosses the whole map in a straight line at
+    // flyer speed leaked (5 lives) in 14 of 15 bot runs regardless of build
+    name: 'Gök Ejder', hpMul: 9, armor: 3, air: true, speed: 40, px: 146, s: 74, leg: 0.24, head: 0.16, big: true, boss: true,
     kind: 'flyer', wingType: 'bat', weapon: 'claw', horns: true, snout: true, eye: '#ffe14a',
     pal: { body: [150, 84, 52], limb: [124, 68, 44], wing: [178, 104, 58], armor: [200, 150, 80], accent: [255, 200, 110], horn: [240, 226, 190] }
   },
@@ -2340,10 +2390,15 @@ const MAPS = [
     pal: [[24, 38, 32], [84, 108, 72], [102, 98, 74], [32, 60, 48]]
   },
   {
-    // two walled ridges cut the valley into three parallel corridors
+    // two walled ridges cut the valley into three parallel corridors.
+    // With two gaps per ridge the lane had almost nowhere to detour to, so
+    // this map lost lives from wave 3 on and ended around wave 10-11 on hard
+    // where every other map reached 20+. A third gap per ridge gives the maze
+    // somewhere to go. (Widening the middle corridor instead measured far
+    // worse: the open ground lets the lane run straight past the defence.)
     id: 'm4', name: 'Gök Boğazı', seed: 999,
     hpMul: 0.93,
-    gen: { blobs: 4, rw: 2.0, rh: 1.6, holes: 0.36, lanes: [4, 15], ridges: [7, 13] },
+    gen: { blobs: 4, rw: 2.0, rh: 1.6, holes: 0.36, lanes: [4, 15], ridges: [7, 13], gapN: 3 },
     pal: [[26, 44, 52], [102, 146, 140], [130, 146, 142], [38, 80, 80]]
   },
   {
@@ -2452,7 +2507,8 @@ function metaBonus(profile, key) { return metaLevel(profile, key) * META_TREE[ke
    as NET.guestMeta[slot]; nothing here is re-synced through snapshot() since
    it is player-local bookkeeping, not simulation state. */
 function metaProfileFor(owner) { return (NET.active && owner !== 0) ? (NET.guestMeta[owner] || EMPTY_META) : META; }
-function metaDmgMult(owner) { return 1 + metaBonus(metaProfileFor(owner), 'dmg'); }
+// a duel is played on even terms: permanent upgrades stay out of it
+function metaDmgMult(owner) { return G.duel ? 1 : 1 + metaBonus(metaProfileFor(owner), 'dmg'); }
 function awardMetaCurrency(won) {
   const diffMult = { easy: 0.8, normal: 1, hard: 1.3 }[G.difficulty] || 1;
   const gained = Math.round((G.waveIdx * 4 + (won ? 40 : 0)) * diffMult);
@@ -2516,7 +2572,7 @@ const WAVE_ORDER = [
   /* 18 */[['harpy', 20], ['gargoyle', 6], ['grunt', 8]],
   /* 19 */[['yelbegen', 4], ['grunt', 12]],           // splitter debut
   /* 20 */[['wyrm', 1], ['gargoyle', 8], ['harpy', 8]],  // BOSS
-  /* 21 */[['wraith', 18], ['basci', 6]],
+  /* 21 */[['basci', 6], ['ghoul', 12], ['wraith', 12]],  // was 18 wraiths straight after the air boss
   /* 22 */[['grunt', 26], ['umay', 5]],
   /* 23 */[['ogre', 15], ['yelbegen', 4]],
   /* 24 */[['wraith', 20], ['gargoyle', 8], ['grunt', 10]],
@@ -2556,6 +2612,18 @@ function wavePressure(i) {
    there is still somewhere to spend, flattening as the board fills out. */
 const ECON_SATURATION = 46000;
 function usableEcon(gold) { return ECON_SATURATION * (1 - Math.exp(-gold / ECON_SATURATION)); }
+
+/* Flyers skip the maze. The HP budget above assumes a creep walks the route
+   the player built, but a flyer crosses the map in a straight line and
+   spends a fraction of that time in range -- so an air group carrying the
+   same HP as a ground one was effectively two to three times as strong.
+   Measured with the balance bot (3 build strategies x 5 maps): waves 1-19
+   cost nothing, then the flying boss at 20 leaked in 14 of 15 runs and
+   the all-flyer wave 21 took another 6-11 lives, which is where nearly
+   every normal and hard run ended. Scaling air HP evens that out without
+   touching the ground curve. */
+const AIR_HP_MUL = 0.72;
+function groupHpMul(type) { return CREEPS[type].air ? AIR_HP_MUL : 1; }
 
 function buildWaves(difficulty, mapSeed) {
   const scale = DIFFICULTY[difficulty] || DIFFICULTY.normal;
@@ -2598,14 +2666,15 @@ function buildWaves(difficulty, mapSeed) {
     const weight = pw.groups.reduce((s, g) => s + g.count * hpMulOf(g.type), 0) || 1;
     const groups = pw.groups.map((g, gi) => ({
       type: g.type, count: g.count, boss: g.boss,
-      hp: Math.max(1, Math.round(totalHp * hpMulOf(g.type) / weight)),
+      hp: Math.max(1, Math.round(totalHp * hpMulOf(g.type) / weight * groupHpMul(g.type))),
       bounty: Math.round(g.unit * scale.bounty),
       speed: CREEPS[g.type].speed * (1 + Math.min(0.30, i * 0.011)),
       gap: g.boss ? 60 : Math.max(9, 26 - i * 0.45),
       delay: gi === 0 ? 0 : 90 // ticks after the previous group empties before this one starts
     }));
     econ += pw.income;
-    const wave = { n: i + 1, groups, boss: groups.some(g => g.boss), bonus: Math.round(pw.bonus * scale.bounty) };
+    // unitHp: HP per unit of archetype weight this wave -- what a duel send is sized off
+    const wave = { n: i + 1, groups, boss: groups.some(g => g.boss), bonus: Math.round(pw.bonus * scale.bounty), unitHp: totalHp / weight };
     // hand the endless generator the state it needs to carry on from wave 33
     if (i === plan.length - 1) seedEndless(wave, econ, scale, mapCfg);
     return wave;
@@ -2657,14 +2726,74 @@ const G = {
   // bootstrap() sets this again, so it must already be defined here or the
   // lobby's map row would render with no button pre-selected
   // one per seat; a slot is non-null exactly while that player is connected
-  heroes: new Array(MAX_PLAYERS).fill(null)
+  heroes: new Array(MAX_PLAYERS).fill(null),
+  // 'std' (solo / co-op) or 'duel'. Set by the lobby before a run is built,
+  // and on a guest by the host's hello. G.duel holds the per-lane state and is
+  // null outside a duel, so every duel branch below is a plain null check.
+  mode: 'std', duel: null
 };
+
+function makeDuelState() {
+  return {
+    lives: [DUEL.lives, DUEL.lives], income: [0, 0], ready: [0, 0], winner: -1,
+    spell: [[{ cd: 0 }, { cd: 0 }], [{ cd: 0 }, { cd: 0 }]],
+    sendQ: [[], []], sendT: [0, 0],
+    lanes: DUEL.spawnGy.map(gy => ({ spawn: { gx: 0, gy }, exit: { gx: GW - 1, gy } }))
+  };
+}
+/* Lane helpers. Outside a duel there is one lane, 0, and they collapse to
+   G.spawn / G.exit / G.lives exactly as before. */
+function laneCount() { return G.duel ? 2 : 1; }
+function laneSpawn(l) { return G.duel ? G.duel.lanes[l].spawn : G.spawn; }
+function laneExit(l) { return G.duel ? G.duel.lanes[l].exit : G.exit; }
+function laneOfY(wy) { return G.duel && wy >= WORLD_H / 2 ? 1 : 0; }
+function laneOfOwner(o) { return G.duel && o === 1 ? 1 : 0; }
+function myLane() { return laneOfOwner(NET.me); }
+function inLane(c, wy) { return !G.duel || (c.lane | 0) === laneOfY(wy); }
+function livesOf(l) { return G.duel ? G.duel.lives[l] : G.lives; }
+function spellsOf(owner) { return G.duel ? G.duel.spell[laneOfOwner(owner)] : G.spell; }
 
 function idxOf(gx, gy) { return gy * GW + gx; }
 function inGrid(gx, gy) { return gx >= 0 && gy >= 0 && gx < GW && gy < GH; }
 
 /* ---------- map generation ---------- */
+/* Duel board: two lanes separated by a two-row rock wall, lane 1 an exact
+   vertical mirror of lane 0 so neither seat has the easier ground. Rock is
+   deliberately sparse -- the lanes are only eight rows tall, and the point
+   is for each player's maze to be the obstacle. */
+function generateDuelMap(seed) {
+  const R = mulberry32(seed);
+  const g = new Uint8Array(GW * GH);
+  for (let x = 0; x < GW; x++) { g[idxOf(x, 0)] = 2; g[idxOf(x, GH - 1)] = 2; g[idxOf(x, 9)] = 2; g[idxOf(x, 10)] = 2; }
+  for (let y = 0; y < GH; y++) { g[idxOf(0, y)] = 2; g[idxOf(GW - 1, y)] = 2; }
+  const sy = DUEL.spawnGy[0];
+  const nearMouth = (x, y) => Math.abs(y - sy) <= 1 && (x < 4 || x > GW - 5);
+  // formations in lane 0 only (rows 2..7), then mirrored into lane 1
+  for (let b = 0; b < 6; b++) {
+    const cx = 6 + (R() * (GW - 14)) | 0, cy = 2 + (R() * 6) | 0;
+    const rw = 1 + (R() * 1.6) | 0, rh = (R() * 1.4) | 0;
+    for (let y = cy - rh; y <= cy + rh; y++) for (let x = cx - rw; x <= cx + rw; x++) {
+      if (y < 2 || y > 7 || x < 2 || x > GW - 3 || nearMouth(x, y)) continue;
+      const d = Math.hypot((x - cx) / (rw + 0.6), (y - cy) / (rh + 0.6));
+      if (d < 1 && R() > 0.3) g[idxOf(x, y)] = 2;
+    }
+  }
+  for (let y = 1; y <= 8; y++) for (let x = 0; x < GW; x++) g[idxOf(x, GH - 1 - y)] = g[idxOf(x, y)];
+  for (const gy of DUEL.spawnGy) for (let y = gy - 1; y <= gy + 1; y++) {
+    g[idxOf(0, y)] = 3; g[idxOf(1, y)] = 3; g[idxOf(GW - 1, y)] = 3; g[idxOf(GW - 2, y)] = 3;
+  }
+  if (!G.duel) G.duel = makeDuelState();
+  G.spawn = G.duel.lanes[0].spawn; G.exit = G.duel.lanes[0].exit;
+  G.grid = g;
+  G.towerAt = new Int32Array(GW * GH).fill(-1);
+  G.dist = new Float64Array(GW * GH);
+  computeFlow();
+  if (!G.flowOK) return generateDuelMap(seed + 1);
+  return g;
+}
 function generateMap(seed, cfg) {
+  if (G.mode === 'duel') return generateDuelMap(seed);
+  G.spawn = { gx: 0, gy: GH >> 1 }; G.exit = { gx: GW - 1, gy: GH >> 1 };
   cfg = cfg || mapBySeed(seed).gen;
   const R = mulberry32(seed);
   const g = new Uint8Array(GW * GH);
@@ -2831,13 +2960,15 @@ function heroPathTo(fromX, fromY, toX, toY) {
 function computeFlow(gridOverride) {
   const grid = gridOverride || G.grid;
   const dist = G.dist; dist.fill(Infinity);
-  const ex = G.exit.gx, ey = G.exit.gy;
   // simple bucket dijkstra with 10/14 costs
   const INF = Infinity;
   const heap = []; // [d, idx] binary heap
   function push(d, i) { heap.push([d, i]); let c = heap.length - 1; while (c > 0) { const p = (c - 1) >> 1; if (heap[p][0] <= heap[c][0]) break; const t = heap[p]; heap[p] = heap[c]; heap[c] = t; c = p; } }
   function pop() { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let c = 0; for (;;) { const l = c * 2 + 1, r = l + 1; let m = c; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === c) break; const t = heap[m]; heap[m] = heap[c]; heap[c] = t; c = m; } } return top; }
-  const si = idxOf(ex, ey); dist[si] = 0; push(0, si);
+  // Seeded from every lane's gate at once. The duel lanes are walled off from
+  // each other, so each cell's distance is to its own lane's gate and one
+  // field serves both.
+  for (let l = 0; l < laneCount(); l++) { const e = laneExit(l), si = idxOf(e.gx, e.gy); dist[si] = 0; push(0, si); }
   while (heap.length) {
     const [d, i] = pop();
     if (d > dist[i]) continue;
@@ -2852,7 +2983,8 @@ function computeFlow(gridOverride) {
       if (nd < dist[ni]) { dist[ni] = nd; push(nd, ni); }
     }
   }
-  G.flowOK = dist[idxOf(G.spawn.gx, G.spawn.gy)] < INF;
+  G.flowOK = true;
+  for (let l = 0; l < laneCount(); l++) { const s = laneSpawn(l); if (!(dist[idxOf(s.gx, s.gy)] < INF)) G.flowOK = false; }
   return G.flowOK;
 }
 /* validity check for placing a tower */
@@ -2868,12 +3000,14 @@ function canPlace(gx, gy) {
 }
 
 /* Walk the flow field from spawn to gate, in grid coords. */
-function routeTiles() {
+function routeTiles(lane) {
+  if (lane === undefined) lane = myLane();
+  const sp = laneSpawn(lane), ex = laneExit(lane);
   const pts = [];
-  let gx = G.spawn.gx, gy = G.spawn.gy, guard = 0;
+  let gx = sp.gx, gy = sp.gy, guard = 0;
   while (guard++ < GW * GH) {
     pts.push([gx, gy]);
-    if (gx === G.exit.gx && gy === G.exit.gy) break;
+    if (gx === ex.gx && gy === ex.gy) break;
     let bd = G.dist[idxOf(gx, gy)], bx = -1, by = -1;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       if (!dx && !dy) continue;
@@ -2915,10 +3049,12 @@ function placementPreview(gx, gy) {
   if (!inGrid(gx, gy)) return out;
   const i = idxOf(gx, gy);
   if (G.grid[i] !== 0) return out;
-  out.coverBefore = routeCoverage(routeTiles());
+  const lane = laneOfY(gy * TILE + TILE / 2);
+  if (G.duel && lane !== myLane()) return out;       // only your own lane is yours to build in
+  out.coverBefore = routeCoverage(routeTiles(lane));
   const saved = G.grid[i]; G.grid[i] = 1;
   out.ok = computeFlow() && groundCreepsHavePath();
-  if (out.ok) { out.route = routeTiles(); out.coverAfter = routeCoverage(out.route); }
+  if (out.ok) { out.route = routeTiles(lane); out.coverAfter = routeCoverage(out.route); }
   G.grid[i] = saved; computeFlow();
   return out;
 }
@@ -2934,17 +3070,20 @@ function groundCreepsHavePath() {
 /* ============================================================
    ENTITY CREATION
    ============================================================ */
-function spawnCreep(typeKey, wave) {
+function spawnCreep(typeKey, wave, lane, sentBy) {
   const t = CREEPS[typeKey];
+  lane = lane | 0;
   const jitter = (SIMRAND() - 0.5) * TILE * 1.4;
   const c = {
     id: G.nextId++, type: typeKey, air: t.air, boss: !!t.boss,
-    x: -14 + SIMRAND() * 10, y: G.spawn.gy * TILE + TILE / 2 + jitter,
+    x: -14 + SIMRAND() * 10, y: laneSpawn(lane).gy * TILE + TILE / 2 + jitter,
     hp: wave.hp, maxHp: wave.hp, armor: t.armor, speed: wave.speed, bounty: wave.bounty,
     slow: 0, slowT: 0, dotT: 0, dot: 0, dotSrc: 0,
     dir: 2, frame: 0, anim: SIMRAND() * 10, alive: true, dead: false, deathT: 0,
     vx: 0, vy: 0, hitFlash: 0, r: (t.s || 34) * 0.30, z: t.air ? 26 : 0, bobP: SIMRAND() * TAU,
-    leak: t.boss ? 5 : 1, wave: wave.n, acd: 0
+    leak: t.boss ? 5 : 1, wave: wave.n, acd: 0,
+    // duel: which lane it walks, and which player paid for it (-1 = the base wave)
+    lane, sentBy: sentBy === undefined ? -1 : sentBy
   };
   G.creeps.push(c);
   return c;
@@ -2964,7 +3103,7 @@ function spawnSplitChild(parent, intoKey, hp, bounty) {
     slow: 0, slowT: 0, dotT: 0, dot: 0, dotSrc: 0,
     dir: parent.dir, frame: 0, anim: SIMRAND() * 10, alive: true, dead: false, deathT: 0,
     vx: 0, vy: 0, hitFlash: 0, r: (t.s || 34) * 0.30, z: t.air ? 26 : 0, bobP: SIMRAND() * TAU,
-    leak: t.boss ? 5 : 1, wave: parent.wave, acd: 0
+    leak: t.boss ? 5 : 1, wave: parent.wave, acd: 0, lane: parent.lane | 0, sentBy: parent.sentBy
   };
   G.creeps.push(c);
   return c;
@@ -3019,6 +3158,7 @@ function towerTitle(t) { return t.branch != null ? TOWERS[t.kind].branch[t.branc
 function placeTower(kind, gx, gy, owner) {
   const def = TOWERS[kind];
   if (G.gold[owner] < def.cost) return { ok: false, why: 'Altın yetersiz' };
+  if (G.duel && laneOfY(gy * TILE + TILE / 2) !== laneOfOwner(owner)) return { ok: false, why: 'Sadece kendi şeridine kurabilirsin' };
   if (!canPlace(gx, gy)) return { ok: false, why: 'Yol kapanır' };
   G.gold[owner] -= def.cost;
   const i = idxOf(gx, gy); G.grid[i] = 1;
@@ -3135,7 +3275,9 @@ const HERO_SEAT_DY = [-1, 1, -2, 2];
 function heroSpawnPoint(owner) {
   // the gate the heroes defend -- same tile the creeps are marching toward
   const dy = HERO_SEAT_DY[owner % HERO_SEAT_DY.length];
-  return { x: G.exit.gx * TILE + TILE / 2, y: clamp(G.exit.gy + dy, 1, GH - 2) * TILE + TILE / 2 };
+  const ex = laneExit(laneOfOwner(owner));
+  // a duel lane is its own gate's, one per player: stand on it, not beside it
+  return { x: ex.gx * TILE + TILE / 2, y: clamp(ex.gy + (G.duel ? 0 : dy), 1, GH - 2) * TILE + TILE / 2 };
 }
 function spawnHero(owner) {
   const p = heroSpawnPoint(owner);
@@ -3165,6 +3307,7 @@ function heroBlocking(c) {
   if (c.air || c.dead) return null;
   for (const h of G.heroes) {
     if (!h || h.dead) continue;
+    if (G.duel && laneOfOwner(h.owner) !== (c.lane | 0)) continue;
     if (h.blockCount >= HERO_STATS.blockCap + (h.wallT > 0 ? HERO_ABILITIES[0].holdBonus : 0)) continue;
     if (dist2(c.x, c.y, h.x, h.y) < HERO_STATS.blockRadius * HERO_STATS.blockRadius) return h;
   }
@@ -3206,7 +3349,7 @@ function useHeroAbility(h, owner, i) {
     // snapshot: killCreep APPENDS splitter children mid-loop (see its header),
     // and a whirl should not also shred the children it just created.
     for (const c of G.creeps.slice()) {
-      if (c.dead || c.air) continue;
+      if (c.dead || c.air || !inLane(c, h.y)) continue;
       if (dist2(h.x, h.y, c.x, c.y) > r2) continue;
       // XP on the same per-point-of-damage rule as the auto-attack, so a
       // well-placed Kasırga actually advances the hero instead of being the
@@ -3289,7 +3432,7 @@ function updateHeroes(dt) {
     else {
       let tgt = null, bd = HERO_STATS.range * HERO_STATS.range;
       for (const c of G.creeps) {
-        if (c.dead) continue;
+        if (c.dead || !inLane(c, h.y)) continue;
         const dd = dist2(h.x, h.y, c.x, c.y - c.z);
         if (dd < bd) { bd = dd; tgt = c; }
       }
@@ -3323,7 +3466,7 @@ function updateHeroes(dt) {
     const contact = HERO_STATS.contactDmg * (1 + G.waveIdx * HERO_STATS.contactPerWave);
     let dmgTaken = 0;
     for (const c of G.creeps) {
-      if (c.dead || c.air) continue;
+      if (c.dead || c.air || !inLane(c, h.y)) continue;
       if (c.heldBy === h.owner) continue;   // already hitting us through the block exchange
       if (dist2(h.x, h.y, c.x, c.y) < HERO_STATS.contactRadius * HERO_STATS.contactRadius) dmgTaken += contact * dt;
     }
@@ -3341,20 +3484,26 @@ function simTick() {
   const dt = 1 / TICK_HZ;
   G.tick++;
   for (const s of G.spell) if (s.cd > 0) s.cd--;
+  if (G.duel) for (const pair of G.duel.spell) for (const s of pair) if (s.cd > 0) s.cd--;
 
   if (G.phase === 'prep') {
     // the tutorial holds the clock while it is walking the player through a
     // step, so a first-timer is never ambushed by wave 1 mid-sentence
     if (!TUT.holdPrep()) G.prepTimer--;
+    // a duel round starts the moment both players say they are ready
+    if (G.duel && G.duel.ready[0] && G.duel.ready[1]) G.prepTimer = 0;
     if (G.prepTimer <= 0) startWave();
   }
   if (G.phase === 'wave') {
     const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
     const grp = w.groups[G.spawnGroupIdx];
+    if (G.duel) updateSends();
     if (grp) {
       G.spawnTimer--;
       if (G.spawnTimer <= 0) {
-        spawnCreep(grp.type, grp); G.spawnLeft--;
+        // a duel sends the same unit down both lanes on the same tick
+        for (let l = 0; l < laneCount(); l++) spawnCreep(grp.type, grp, l);
+        G.spawnLeft--;
         if (G.spawnLeft > 0) { G.spawnTimer = grp.gap; }
         else {
           G.spawnGroupIdx++;
@@ -3362,15 +3511,22 @@ function simTick() {
           if (next) { G.spawnLeft = next.count; G.spawnTimer = next.delay; }
         }
       }
-    } else if (G.creeps.length === 0) {
+    } else if (G.creeps.length === 0 && !(G.duel && (G.duel.sendQ[0].length || G.duel.sendQ[1].length))) {
       // wave clear. Paid into each player's own purse, so it is divided by
       // the player count -- see sharedBonus.
       const bonus = sharedBonus(w.bonus);
       payAll(bonus);
-      ev('waveClear', { n: w.n, bonus });
+      if (G.duel) for (let i = 0; i < 2; i++) G.gold[i] += G.duel.income[i];
+      ev('waveClear', { n: w.n, bonus, inc: G.duel ? G.duel.income.slice() : null });
       G.waveIdx++;
-      if (G.waveIdx >= WAVES.length && !G.endless) { G.phase = 'won'; ev('won'); }
-      else { G.phase = 'prep'; G.prepTimer = TICK_HZ * (G.autoStart ? 6 : 22); }
+      // a duel never "wins" by running out of campaign: past wave 32 it keeps
+      // going on the endless curve until one of the two gates falls
+      if (G.waveIdx >= WAVES.length && !G.endless && !G.duel) { G.phase = 'won'; ev('won'); }
+      else {
+        G.phase = 'prep';
+        G.prepTimer = TICK_HZ * (G.duel ? DUEL.prepSec : G.autoStart ? 6 : 22);
+        if (G.duel) G.duel.ready = [0, 0];
+      }
     }
   }
 
@@ -3381,7 +3537,55 @@ function simTick() {
   updateProjectiles(dt);
   updateHeroes(dt);
 
-  if (G.lives <= 0 && G.phase !== 'over') { G.phase = 'over'; ev('lost'); }
+  if (G.duel) {
+    const [a, b] = G.duel.lives;
+    if ((a <= 0 || b <= 0) && G.phase !== 'over') {
+      // both gates on the same tick: whoever has more left standing; even is a draw
+      endDuel(a <= 0 && b <= 0 ? (a === b ? -2 : a > b ? 0 : 1) : a <= 0 ? 1 : 0, false);
+    }
+  } else if (G.lives <= 0 && G.phase !== 'over') { G.phase = 'over'; ev('lost'); }
+}
+/* winner: 0/1 = that seat won, -2 = draw. forfeit = the other player left. */
+function endDuel(winner, forfeit) {
+  if (!G.duel || G.phase === 'over') return;
+  G.duel.winner = winner; G.phase = 'over';
+  // a forfeit arrives from a connection handler, between ticks -- and a
+  // finished run never ticks again, so the event alone would never be shown
+  if (forfeit) UI.duelForfeit = true;
+  ev('duelEnd', { winner, forfeit: forfeit ? 1 : 0, n: G.waveIdx + 1 });
+}
+/* ---------- duel sends ----------
+   Bought with the sender's gold, queued on the OPPONENT's lane and released
+   one every DUEL.sendGap ticks while a round is running. A send bought
+   between rounds waits for the next round to open. HP is sized off the
+   current base wave, so a late send is as relevant as an early one. */
+function sendUnits(owner, i) {
+  const s = SENDS[i];
+  if (!G.duel || !s) return { ok: false, why: 'Geçersiz' };
+  if (G.gold[owner] < s.cost) return { ok: false, why: 'Altın yetersiz' };
+  const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
+  const t = CREEPS[s.type];
+  const unit = {
+    type: s.type, n: w.n,
+    hp: Math.max(1, Math.round(w.unitHp * (t.hpMul || 1) * groupHpMul(s.type) * DUEL.sendHpMul)),
+    speed: t.speed * (1 + Math.min(0.30, G.waveIdx * 0.011)),
+    bounty: Math.max(1, Math.round(s.cost * DUEL.sendBountyFrac / s.n))
+  };
+  G.gold[owner] -= s.cost;
+  G.duel.income[owner] += s.inc;
+  const target = 1 - laneOfOwner(owner);
+  for (let k = 0; k < s.n; k++) G.duel.sendQ[target].push(unit);
+  ev('send', { from: owner, to: target, i, n: s.n });
+  return { ok: true };
+}
+function updateSends() {
+  for (let l = 0; l < 2; l++) {
+    const q = G.duel.sendQ[l];
+    if (G.duel.sendT[l] > 0) { G.duel.sendT[l]--; continue; }
+    if (!q.length) continue;
+    spawnCreep(q[0].type, q.shift(), l, 1 - l);
+    G.duel.sendT[l] = DUEL.sendGap;
+  }
 }
 /* ---------- endless mode ----------
    The old generator grew HP at 1.18 per wave while paying out bounty+1 per
@@ -3402,20 +3606,22 @@ function endlessWave(i) {
   if (ENDLESS.cache[k]) return ENDLESS.cache[k];
   const hpMulOf = type => CREEPS[type].hpMul || 1;
   const raw = ENDLESS_ORDER[k % ENDLESS_ORDER.length];
-  const totalHp = ENDLESS.hp * Math.pow(ENDLESS_HP_GROWTH, k + 1);
+  // a duel's per-round ramp carries on past the campaign (ENDLESS is reseeded,
+  // and this cache cleared, on every resetRun, so modes never share entries)
+  const totalHp = ENDLESS.hp * Math.pow(ENDLESS_HP_GROWTH, k + 1) * (G.duel ? 1 + DUEL.hpRamp * i : 1);
   const payMul = Math.pow(ENDLESS_PAY_GROWTH, k + 1);
   const weight = raw.reduce((s, [t, c]) => s + c * hpMulOf(t), 0) || 1;
   const unitPay = ENDLESS.bounty / Math.max(1, raw.reduce((s, [, c]) => s + c, 0));
   const groups = raw.map(([type, count], gi) => ({
     type, count, boss: !!CREEPS[type].boss,
-    hp: Math.max(1, Math.round(totalHp * hpMulOf(type) / weight)),
+    hp: Math.max(1, Math.round(totalHp * hpMulOf(type) / weight * groupHpMul(type))),
     bounty: Math.max(1, Math.round(unitPay * payMul * hpMulOf(type))),
     speed: CREEPS[type].speed * 1.3,
     gap: CREEPS[type].boss ? 60 : 9,
     delay: gi === 0 ? 0 : 90
   }));
   const w = { n: i + 1, groups, boss: groups.some(g => g.boss),
-              bonus: Math.round(ENDLESS.bonus * payMul) };
+              bonus: Math.round(ENDLESS.bonus * payMul), unitHp: totalHp / weight };
   ENDLESS.cache[k] = w;
   return w;
 }
@@ -3472,7 +3678,8 @@ function updateCreeps(dt) {
     }
     const spd = c.speed * (1 - c.slow);
     let tx, ty;
-    if (c.air) { tx = G.exit.gx * TILE + TILE / 2; ty = G.exit.gy * TILE + TILE / 2; }
+    const cex = laneExit(c.lane | 0);
+    if (c.air) { tx = cex.gx * TILE + TILE / 2; ty = cex.gy * TILE + TILE / 2; }
     else {
       const gx = clamp((c.x / TILE) | 0, 0, GW - 1), gy = clamp((c.y / TILE) | 0, 0, GH - 1);
       let bd = G.dist[idxOf(gx, gy)], bx = gx, by = gy;
@@ -3484,7 +3691,7 @@ function updateCreeps(dt) {
         if (G.dist[ni] < bd) { bd = G.dist[ni]; bx = nx; by = ny; }
       }
       tx = bx * TILE + TILE / 2; ty = by * TILE + TILE / 2;
-      if (c.x < TILE) { tx = TILE * 1.5; ty = G.spawn.gy * TILE + TILE / 2; }
+      if (c.x < TILE) { tx = TILE * 1.5; ty = laneSpawn(c.lane | 0).gy * TILE + TILE / 2; }
     }
     let dx = tx - c.x, dy = ty - c.y; const d = Math.hypot(dx, dy) || 1;
     let ax = dx / d, ay = dy / d;
@@ -3523,8 +3730,9 @@ function updateCreeps(dt) {
 
     // reached exit
     if (c.x > (GW - 1.2) * TILE) {
-      G.lives -= c.leak; G.leaked++;
-      ev('leak', { x: c.x, y: c.y, boss: c.boss, amt: c.leak });
+      if (G.duel) G.duel.lives[c.lane | 0] -= c.leak; else G.lives -= c.leak;
+      G.leaked++;
+      ev('leak', { x: c.x, y: c.y, boss: c.boss, amt: c.leak, lane: c.lane | 0 });
       list.splice(i, 1);
     }
   }
@@ -3548,6 +3756,7 @@ function updateCreepAbilities(dt) {
       const ab = def.abil.ranged, r2 = ab.range * ab.range;
       let best = null, bd = r2;
       for (const t of G.towers) {
+        if (!inLane(c, t.y)) continue;
         const d = dist2(c.x, c.y, t.x, t.y);
         if (d <= bd) { bd = d; best = t; }
       }
@@ -3566,7 +3775,7 @@ function updateCreepAbilities(dt) {
     } else if (def.abil.heal) {
       const ab = def.abil.heal, r2 = ab.range * ab.range;
       for (const o of G.creeps) {
-        if (o === c || o.dead || o.air !== c.air) continue;
+        if (o === c || o.dead || o.air !== c.air || (o.lane | 0) !== (c.lane | 0)) continue;
         if (o.hp >= o.maxHp) continue;
         if (dist2(c.x, c.y, o.x, o.y) > r2) continue;
         o.hp = Math.min(o.maxHp, o.hp + ab.amount);
@@ -3617,6 +3826,7 @@ function pickTarget(t) {
   for (const c of G.creeps) {
     if (c.dead) continue;
     if (c.air && !def.air) continue;
+    if (!inLane(c, t.y)) continue;      // duel: a tower by the wall must not defend the other lane
     if (dist2(t.x, t.y, c.x, c.y) > r2) continue;
     let sc;
     switch (t.mode) {
@@ -3671,7 +3881,7 @@ function fire(t, tgt, px, py) {
       dmg *= 0.72;
       let nxt = null, bd = 1e9;
       for (const c of G.creeps) {
-        if (c.dead || seen.has(c.id)) continue;
+        if (c.dead || seen.has(c.id) || !inLane(c, t.y)) continue;
         const d = dist2(cur.x, cur.y, c.x, c.y);
         if (d < 130 * 130 && d < bd) { bd = d; nxt = c; }
       }
@@ -3724,6 +3934,7 @@ function impact(p, x, y, tgt) {
       // Bataryası (cannon branch 1) overrides air:true, so this now asks the
       // FIRING TOWER's merged def instead of hardcoding the kind's base.
       if (kind === 'shell' && c.air && !(p.tower && towerDef(p.tower).air)) continue;
+      if (p.tower && !inLane(c, p.tower.y)) continue;
       const d2 = dist2(x, y, c.x, c.y - c.z);
       if (d2 <= r2) {
         const f = 1 - Math.sqrt(d2) / p.splash * 0.55;
@@ -3772,20 +3983,23 @@ const SPELLS = [
   { name: 'Kara Kış', key: 'W', cd: 55, r: 0, dmg: 0, desc: 'Tüm düşmanları 5 sn boyunca %60 yavaşlatır.' }
 ];
 function castSpell(idx, x, y, owner) {
-  const s = G.spell[idx]; if (s.cd > 0) return false;
+  const s = spellsOf(owner)[idx]; if (s.cd > 0) return false;
   // Spell cooldowns are shared (one pool for both co-op players), so like
   // lives this always uses META (the authoritative/local side's own
-  // profile), regardless of which player actually cast it.
-  s.cd = SPELLS[idx].cd * TICK_HZ * (1 - metaBonus(META, 'spell'));
+  // profile), regardless of which player actually cast it. A duel gives
+  // each player their own pair and ignores meta upgrades entirely.
+  s.cd = SPELLS[idx].cd * TICK_HZ * (1 - (G.duel ? 0 : metaBonus(META, 'spell')));
+  const lane = laneOfOwner(owner), mine = c => !G.duel || (c.lane | 0) === lane;
   if (idx === 0) {
     const r2 = SPELLS[0].r * SPELLS[0].r;
-    for (const c of G.creeps) if (!c.dead && dist2(x, y, c.x, c.y - c.z) <= r2) damage(c, SPELLS[0].dmg, 'chaos', owner, null);
+    for (const c of G.creeps) if (!c.dead && mine(c) && dist2(x, y, c.x, c.y - c.z) <= r2) damage(c, SPELLS[0].dmg, 'chaos', owner, null);
     ev('smite', { x, y, r: SPELLS[0].r });
     ev('sfx', { name: 'thunder', x, y });
   } else {
-    for (const c of G.creeps) { if (c.dead) continue; c.slow = Math.max(c.slow, 0.6); c.slowT = 5; }
-    ev('blizzard', {});
-    ev('sfx', { name: 'frost', x: WORLD_W / 2, y: WORLD_H / 2 });
+    for (const c of G.creeps) { if (c.dead || !mine(c)) continue; c.slow = Math.max(c.slow, 0.6); c.slowT = 5; }
+    const cy = G.duel ? laneSpawn(lane).gy * TILE : WORLD_H / 2;
+    ev('blizzard', { x: WORLD_W / 2, y: cy });
+    ev('sfx', { name: 'frost', x: WORLD_W / 2, y: cy });
   }
   return true;
 }
@@ -3818,7 +4032,7 @@ function useAbility(t, owner, x, y) {
     // tower's normal shell (def.air === false).
     const r2 = ab.radius * ab.radius, st = towerStat(t);
     for (const c of G.creeps) {
-      if (c.dead || c.air) continue;
+      if (c.dead || c.air || !inLane(c, t.y)) continue;
       const d2 = dist2(x, y, c.x, c.y - c.z);
       if (d2 <= r2) {
         const f = 1 - Math.sqrt(d2) / ab.radius * 0.5;
@@ -3834,6 +4048,7 @@ function useAbility(t, owner, x, y) {
     const r2 = ab.radius * ab.radius;
     for (const o of G.towers) {
       if (dist2(t.x, t.y, o.x, o.y) > r2) continue;
+      if (G.duel && laneOfY(o.y) !== laneOfY(t.y)) continue;   // never the opponent's towers
       o.buffT = Math.max(o.buffT, ab.dur); o.buffMult = ab.mult;
     }
     ev('abilFx', { ax: t.x, ay: t.y - 30, kind: 'storm' });
@@ -4155,6 +4370,8 @@ const R = {
     this.relayout();
     this.cam.z = this.cam.tz;
     this.cam.x = WORLD_W / 2; this.cam.y = WORLD_H / 2;
+    // a zoomed-in (portrait) duel view starts on your own lane, not on the wall
+    if (G.duel) this.cam.y = (laneSpawn(myLane()).gy + 0.5) * TILE;
     clampCam();
   },
   viewMidY() { return (this.viewTop + (this.H - this.viewBot)) / 2; },
@@ -4402,9 +4619,12 @@ function drawCloudShadows(x, t) {
   x.restore();
 }
 function drawPortals(x) {
+  for (let l = 0; l < laneCount(); l++) drawLanePortals(x, l);
+}
+function drawLanePortals(x, lane) {
   const t = R.time;
   // spawn rift
-  const sx = 12, sy = G.spawn.gy * TILE + TILE / 2;
+  const sx = 12, sy = laneSpawn(lane).gy * TILE + TILE / 2;
   x.save();
   for (let i = 0; i < 3; i++) {
     const p = (t * 0.6 + i / 3) % 1;
@@ -4419,9 +4639,9 @@ function drawPortals(x) {
   x.restore();
 
   // the gate (exit) — signature element
-  const ex = (GW - 1) * TILE + 6, ey = G.exit.gy * TILE + TILE / 2;
+  const ex = (GW - 1) * TILE + 6, ey = laneExit(lane).gy * TILE + TILE / 2;
   x.save();
-  const hurt = 1 - clamp(G.lives / 20, 0, 1);
+  const hurt = 1 - clamp(livesOf(lane) / (G.duel ? DUEL.lives : 20), 0, 1);
   // gate posts
   for (const sgn of [-1, 1]) {
     const py = ey + sgn * 62;
@@ -4443,11 +4663,15 @@ function drawPortals(x) {
   x.restore();
 }
 function drawPathPreview(x) {
+  for (let l = 0; l < laneCount(); l++) drawLanePath(x, l);
+}
+function drawLanePath(x, lane) {
+  const sp = laneSpawn(lane), ex = laneExit(lane);
   const pts = [];
-  let gx = G.spawn.gx, gy = G.spawn.gy, guard = 0;
+  let gx = sp.gx, gy = sp.gy, guard = 0;
   while (guard++ < GW * GH) {
     pts.push([gx * TILE + TILE / 2, gy * TILE + TILE / 2]);
-    if (gx === G.exit.gx && gy === G.exit.gy) break;
+    if (gx === ex.gx && gy === ex.gy) break;
     let bd = G.dist[idxOf(gx, gy)], bx = -1, by = -1;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       if (!dx && !dy) continue;
@@ -4490,6 +4714,7 @@ function drawBuildOverlay(x) {
   x.save(); x.globalAlpha = 0.5; x.lineWidth = 1;
   for (let gy = 1; gy < GH - 1; gy++) for (let gx = 1; gx < GW - 1; gx++) {
     if (G.grid[idxOf(gx, gy)] !== 0) continue;
+    if (G.duel && laneOfY(gy * TILE + TILE / 2) !== myLane()) continue;
     x.strokeStyle = 'rgba(180,220,255,0.16)';
     x.strokeRect(gx * TILE + 0.5, gy * TILE + 0.5, TILE - 1, TILE - 1);
   }
@@ -4497,7 +4722,8 @@ function drawBuildOverlay(x) {
   const [wx, wy] = UI.aimW; const gx = (wx / TILE) | 0, gy = (wy / TILE) | 0;
   if (!inGrid(gx, gy)) return;
   const def = TOWERS[UI.buildKind];
-  const ok = G.grid[idxOf(gx, gy)] === 0 && G.gold[NET.me] >= def.cost && UI.placeOK;
+  const ok = G.grid[idxOf(gx, gy)] === 0 && G.gold[NET.me] >= def.cost && UI.placeOK &&
+    (!G.duel || laneOfY(gy * TILE + TILE / 2) === myLane());
   x.save();
   x.fillStyle = ok ? 'rgba(110,240,150,0.26)' : 'rgba(255,80,70,0.30)';
   x.fillRect(gx * TILE, gy * TILE, TILE, TILE);
@@ -4588,6 +4814,13 @@ function drawCreep(x, c) {
   const spNow = Math.hypot(c.vx, c.vy);
   const idleY = spNow < 4 && !c.dead ? Math.sin(R.time * 1.7 + c.id * 0.9) * 1.1 : 0;
   const sx = c.x - def.px / 2, sy = c.y - c.z - def.px * 0.62 + idleY;
+  // duel: a unit your opponent paid for wears their colour at its feet
+  if (G.duel && c.sentBy >= 0 && !c.dead) {
+    x.save();
+    x.strokeStyle = OWNER_COL[c.sentBy]; x.lineWidth = 2; x.globalAlpha = 0.85;
+    x.beginPath(); x.ellipse(c.x, c.y + 2, c.r * 1.3, c.r * 0.6, 0, 0, TAU); x.stroke();
+    x.restore();
+  }
   x.save();
   if (c.dead) {
     const t = 1 - c.deathT / 0.75;
@@ -4901,6 +5134,8 @@ const UI = {
   // the defence currently covering it that would strand (see placementPreview)
   ghostRoute: null, ghostAbandon: 0,
   toasts: [], rects: [], scale: 1, panelH: 128, hoverBtn: null,
+  // duel: the build row shows the five sends instead of the five towers
+  sendMode: false,
   hudTop: 1e9, hudBottom: 54,
   toast(msg, col) { this.toasts.push({ msg, col: col || '#ffd9a0', life: 2.4 }); if (this.toasts.length > 4) this.toasts.shift(); }
 };
@@ -4988,6 +5223,73 @@ function btn(x, r, label, sub, active, disabled, icon) {
 }
 function addRect(id, px, py, w, h, act) { const r = { id, x: px, y: py, w, h, act }; UI.rects.push(r); return r; }
 
+/* The five tower buttons -- or, in a duel's attack mode, the five sends --
+   plus the duel's attack toggle as a sixth slot. Shared by the landscape and
+   portrait HUDs; `geom(i)` gives slot i's [x, y, w, h]. */
+function drawBuildRow(x, geom) {
+  if (!G.duel) UI.sendMode = false;
+  if (UI.sendMode) {
+    SENDS.forEach((sd, i) => {
+      const [bx, by, bw, bh] = geom(i);
+      const r = addRect('snd' + i, bx, by, bw, bh, () => cmdSend(i));
+      const sheet = R.sprites.units[sd.type], icon = sheet && sheet[2] && sheet[2][0];
+      btn(x, r, '×' + sd.n, String(sd.cost), false, G.gold[NET.me] < sd.cost, icon);
+    });
+  } else {
+    TOWER_KEYS.forEach((k, i) => {
+      const def = TOWERS[k], [bx, by, bw, bh] = geom(i);
+      const r = addRect('b' + k, bx, by, bw, bh, () => selectBuild(k));
+      const spr = R.sprites.towers[k + '0'];
+      btn(x, r, def.key, String(def.cost), UI.buildKind === k, G.gold[NET.me] < def.cost, spr && spr.base);
+    });
+  }
+  if (!G.duel) return;
+  const [bx, by, bw, bh] = geom(5);
+  const r = addRect('bsend', bx, by, bw, bh, () => {
+    UI.sendMode = !UI.sendMode; UI.buildKind = null; UI.sel = null; UI.spellAim = null; Audio2.play('ui');
+  });
+  panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: UI.sendMode, r: 7 });
+  drawSwords(x, r.x + r.w / 2, r.y + r.h / 2 - 5, Math.min(r.w, r.h) * 0.24, UI.sendMode ? '#9fd8ff' : '#ffd76a');
+  txt(x, UI.sendMode ? 'SAVUN' : 'SALDIR', r.x + r.w / 2, r.y + r.h - 9, Math.min(10, r.w * 0.19), '#ffe0a0', 'center', 800);
+}
+/* Crossed blades for the attack toggle, or a shield outline while attacking
+   (tap again to go back to building). */
+function drawSwords(x, cx, cy, r, col) {
+  x.save(); x.strokeStyle = col; x.lineWidth = Math.max(1.6, r * 0.22); x.lineCap = 'round';
+  if (UI.sendMode) {
+    x.beginPath();
+    x.moveTo(cx, cy - r); x.lineTo(cx + r * 0.85, cy - r * 0.55); x.lineTo(cx + r * 0.65, cy + r * 0.45);
+    x.lineTo(cx, cy + r); x.lineTo(cx - r * 0.65, cy + r * 0.45); x.lineTo(cx - r * 0.85, cy - r * 0.55); x.closePath(); x.stroke();
+  } else {
+    for (const s of [-1, 1]) {
+      x.beginPath(); x.moveTo(cx - s * r, cy - r); x.lineTo(cx + s * r, cy + r); x.stroke();
+      x.beginPath(); x.moveTo(cx + s * r * 0.45, cy + r * 0.05); x.lineTo(cx + s * r * 0.05, cy + r * 0.45); x.stroke();
+    }
+  }
+  x.restore();
+}
+/* Wave button text: [line 1, line 2, highlighted]. In a duel the button is a
+   ready toggle, so it says whose turn is holding the round up. */
+function phaseLabel(w) {
+  if (G.phase === 'over' && G.duel) {
+    const d = G.duel.winner;
+    return d === myLane() ? 'ZAFER' : d === -2 ? 'BERABERE' : d === -3 ? 'BAĞLANTI KOPTU' : 'YENİLGİ';
+  }
+  return G.phase === 'wave' ? `DALGA ${w.n}` : G.phase === 'won' ? 'ZAFER' : G.phase === 'over' ? 'YENİLGİ' : `DALGA ${w.n} HAZIR`;
+}
+function startLabels() {
+  const sec = Math.ceil(G.prepTimer / TICK_HZ);
+  if (G.duel) {
+    const me = myLane(), d = G.duel;
+    if (G.phase === 'prep') {
+      return [d.ready[me] ? 'HAZIRSIN' : 'HAZIR', (d.ready[1 - me] ? 'rakip hazır' : 'rakip bekliyor') + ` · ${sec}s`, !d.ready[me]];
+    }
+    return ['TUR SÜRÜYOR', `gelirin +${d.income[me]}/tur`, false];
+  }
+  if (G.phase === 'prep') return ['DALGAYI ÇAĞIR', `+${sec}s erken bonus`, true];
+  return ['SAVAŞ SÜRÜYOR', `${WAVES.length}. dalgaya kadar`, false];
+}
+
 /* ------------------------------------------------------------
    LAYOUT METRICS
    One source of truth for how much vertical space the HUD eats,
@@ -5031,14 +5333,16 @@ function drawHUD(x, W, H) {
   /* ---- top bar ---- */
   const tbh = 46 * S;
   panel(x, 6, 4, W - 12, tbh, { gold: true, r: 9 });
-  // lives
-  const lifeCol = G.lives > 10 ? '#ff9a8a' : '#ff4b3a';
+  // lives (in a duel: your own lane's)
+  const myLives = livesOf(myLane());
+  const lifeCol = myLives > 10 ? '#ff9a8a' : '#ff4b3a';
   drawHeart(x, 26 * S, 4 + tbh / 2, 10 * S, lifeCol);
-  txt(x, String(Math.max(0, G.lives)), 44 * S, 4 + tbh / 2, 19 * S, '#ffe9d0', 'left', 800);
+  txt(x, String(Math.max(0, myLives)), 44 * S, 4 + tbh / 2, 19 * S, '#ffe9d0', 'left', 800);
   // gold
   // One purse per player, own purse first. The pitch tightens past two seats
   // because four at the old 96px spacing ran straight into the wave label.
-  const purses = NET.active ? Math.max(2, G.players) : 1;
+  // a duel shows only your own purse -- the opponent's gold is their secret
+  const purses = NET.active && !G.duel ? Math.max(2, G.players) : 1;
   const pitch = (purses > 2 ? 74 : 96) * S, coinR = (purses > 2 ? 7.5 : 8.5) * S;
   let gxp = 92 * S;
   for (let k = 0; k < purses; k++) {
@@ -5048,9 +5352,16 @@ function drawHUD(x, W, H) {
     if (NET.active) { x.fillStyle = OWNER_COL[i]; x.beginPath(); x.arc(gxp + 4 * S, 4 + tbh / 2 - 12 * S, 3 * S, 0, TAU); x.fill(); }
     gxp += pitch;
   }
+  if (G.duel) {
+    txt(x, `+${G.duel.income[myLane()]}/tur`, gxp - 6 * S, 4 + tbh / 2, 11 * S, '#8fe08a', 'left', 700, 'system-ui');
+    const opp = 1 - myLane(), ox = W - 96 * S;
+    txt(x, 'RAKİP', ox - 44 * S, 4 + tbh / 2, 9.5 * S, OWNER_COL[opp], 'right', 800);
+    drawHeart(x, ox - 32 * S, 4 + tbh / 2, 8 * S, '#ff7a6a');
+    txt(x, String(Math.max(0, livesOf(opp))), ox - 20 * S, 4 + tbh / 2, 15 * S, '#ffe9d0', 'left', 800);
+  }
   // wave
   const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
-  const label = G.phase === 'wave' ? `DALGA ${w.n}` : G.phase === 'won' ? 'ZAFER' : G.phase === 'over' ? 'YENİLGİ' : `DALGA ${w.n} HAZIR`;
+  const label = phaseLabel(w);
   txt(x, label, W / 2, 4 + tbh / 2 - 7 * S, 15 * S, w.boss ? '#ff8a5a' : '#f2e4c4', 'center', 800);
   const sub = G.phase === 'prep'
     ? `${waveSummaryText(w)} · ${waveArmorText(w)} zırh · ${Math.ceil(G.prepTimer / TICK_HZ)}s`
@@ -5085,16 +5396,12 @@ function drawHUD(x, W, H) {
   const startW = 92 * S, startH = Math.max(TOUCH_MIN, 44 * S);
   const startX = W - 14 - rightW - 8 * S - startW;
 
-  // build buttons (center)
+  // build buttons (center). A duel adds a sixth: the attack toggle, which
+  // swaps the five tower slots for the five sends.
   const bstart = 14 + ipw + 10 * S;
-  const bw = Math.max(34 * S, Math.min(62 * S, (startX - 10 * S - bstart - 4 * 6 * S) / 5));
-  TOWER_KEYS.forEach((k, i) => {
-    const def = TOWERS[k];
-    const r = addRect('b' + k, bstart + i * (bw + 6 * S), by + (bh - bw) / 2, bw, bw, () => selectBuild(k));
-    const spr = R.sprites.towers[k + '0'];
-    const afford = G.gold[NET.me] >= def.cost;
-    btn(x, r, def.key, String(def.cost), UI.buildKind === k, !afford, spr && spr.base);
-  });
+  const nb = G.duel ? 6 : 5;
+  const bw = Math.max(34 * S, Math.min(62 * S, (startX - 10 * S - bstart - (nb - 1) * 6 * S) / nb));
+  drawBuildRow(x, (i) => [bstart + i * (bw + 6 * S), by + (bh - bw) / 2, bw, bw]);
 
   // spells + start (right); geometry above
   let rx = W - 14 - sw;
@@ -5104,19 +5411,20 @@ function drawHUD(x, W, H) {
   // never be tapped. rightN counts the buttons rather than hardcoding
   // SPELLS.length, so adding one here can't silently reintroduce that.
   const startR = addRect('start', startX, by + (bh - startH) / 2, startW, startH, () => cmdStartWave());
-  panel(x, startR.x, startR.y, startR.w, startR.h, { gold: G.phase === 'prep', hi: G.phase === 'prep', r: 7 });
-  txt(x, G.phase === 'prep' ? 'DALGAYI ÇAĞIR' : 'SAVAŞ SÜRÜYOR', startR.x + startR.w / 2, startR.y + startR.h / 2 - 6 * S, 10.5 * S, G.phase === 'prep' ? '#ffe08a' : '#8a8578', 'center', 800);
-  txt(x, G.phase === 'prep' ? `+${Math.ceil(G.prepTimer / TICK_HZ)}s erken bonus` : `dalga ${WAVES.length}'e kadar`, startR.x + startR.w / 2, startR.y + startR.h / 2 + 10 * S, 8.5 * S, '#a89f8a', 'center', 600, 'system-ui');
+  const [sl1, sl2, sHot] = startLabels();
+  panel(x, startR.x, startR.y, startR.w, startR.h, { gold: sHot, hi: sHot, r: 7 });
+  txt(x, sl1, startR.x + startR.w / 2, startR.y + startR.h / 2 - 6 * S, 10.5 * S, sHot ? '#ffe08a' : '#8a8578', 'center', 800);
+  txt(x, sl2, startR.x + startR.w / 2, startR.y + startR.h / 2 + 10 * S, 8.5 * S, '#a89f8a', 'center', 600, 'system-ui');
 
   SPELLS.forEach((sp, i) => {
     const r = addRect('sp' + i, rx, by + (bh - sw) / 2, sw, sw, () => triggerSpell(i));
-    const ready = G.spell[i].cd <= 0;
+    const ready = spellsOf(NET.me)[i].cd <= 0;
     panel(x, r.x, r.y, r.w, r.h, { hi: UI.spellAim === i, gold: ready, r: 7 });
     drawSpellIcon(x, i, r.x + r.w / 2, r.y + r.h / 2 - 4 * S, 15 * S, ready);
     txt(x, sp.key, r.x + 8 * S, r.y + 9 * S, 9 * S, '#ffd76a', 'left', 800);
     if (!ready) {
       x.save(); x.fillStyle = 'rgba(6,8,12,0.62)'; roundRect(x, r.x, r.y, r.w, r.h, 7); x.fill();
-      txt(x, Math.ceil(G.spell[i].cd / TICK_HZ) + 's', r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#cfd6e0', 'center', 800); x.restore();
+      txt(x, Math.ceil(spellsOf(NET.me)[i].cd / TICK_HZ) + 's', r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#cfd6e0', 'center', 800); x.restore();
     }
     rx -= sw + 6 * S;
   });
@@ -5172,13 +5480,14 @@ function drawHUDPortrait(x, W, H, M) {
   /* ---- top block: stats strip ---- */
   const tY = 4, tH = M.topStatsH, cy = tY + tH / 2;
   panel(x, 6, tY, W - 12, tH, { gold: true, r: 9 });
-  const lifeCol = G.lives > 10 ? '#ff9a8a' : '#ff4b3a';
+  const myLives = livesOf(myLane());
+  const lifeCol = myLives > 10 ? '#ff9a8a' : '#ff4b3a';
   drawHeart(x, 24, cy, 11, lifeCol);
-  txt(x, String(Math.max(0, G.lives)), 40, cy, 18, '#ffe9d0', 'left', 800);
+  txt(x, String(Math.max(0, myLives)), 40, cy, 18, '#ffe9d0', 'left', 800);
   // Portrait has far less room: past two players the purses are drawn as a
   // compact strip (own first) rather than four full-size readouts, which would
   // not fit beside the menu and speed buttons on a phone.
-  const purses = NET.active ? Math.max(2, G.players) : 1;
+  const purses = NET.active && !G.duel ? Math.max(2, G.players) : 1;
   const wide = purses <= 2;
   const pitch = wide ? 82 : Math.min(62, (W - 76 - 2 * TOUCH_MIN - 3 * gap) / purses);
   let gxp = 76;
@@ -5188,6 +5497,12 @@ function drawHUDPortrait(x, W, H, M) {
     txt(x, String(G.gold[i] | 0), gxp + (wide ? 22 : 17), cy, wide ? 15 : 12, i === NET.me ? '#ffd76a' : '#c9b98a', 'left', 800);
     if (NET.active) { x.fillStyle = OWNER_COL[i]; x.beginPath(); x.arc(gxp + 2, cy - (wide ? 13 : 11), 3, 0, TAU); x.fill(); }
     gxp += pitch;
+  }
+  if (G.duel) {
+    const opp = 1 - myLane();
+    txt(x, `+${G.duel.income[myLane()]}`, gxp - 10, cy, 11, '#8fe08a', 'left', 700, 'system-ui');
+    drawHeart(x, gxp + 36, cy, 8, OWNER_COL[opp]);
+    txt(x, String(Math.max(0, livesOf(opp))), gxp + 47, cy, 14, '#ffe9d0', 'left', 800);
   }
   const mnR = addRect('menu', W - pad - TOUCH_MIN, tY + 2, TOUCH_MIN, TOUCH_MIN, () => openMenu());
   panel(x, mnR.x, mnR.y, mnR.w, mnR.h, { r: 6 });
@@ -5202,7 +5517,7 @@ function drawHUDPortrait(x, W, H, M) {
   const wy = tY + tH + 4, wH = M.topWaveH;
   panel(x, 6, wy, W - 12, wH, { r: 8 });
   const w = WAVES[G.waveIdx] || endlessWave(G.waveIdx);
-  const label = G.phase === 'wave' ? `DALGA ${w.n}` : G.phase === 'won' ? 'ZAFER' : G.phase === 'over' ? 'YENİLGİ' : `DALGA ${w.n} HAZIR`;
+  const label = phaseLabel(w);
   txt(x, label, W / 2, wy + 13, 14, w.boss ? '#ff8a5a' : '#f2e4c4', 'center', 800);
   const sub = G.phase === 'prep'
     ? `${waveSummaryText(w)} · ${waveArmorText(w)} zırh · ${Math.ceil(G.prepTimer / TICK_HZ)}s`
@@ -5219,15 +5534,12 @@ function drawHUDPortrait(x, W, H, M) {
 
   drawInfoPanelPortrait(x, pad, infoY, innerW, M.infoH);
 
-  // tower row — centred, square, >= 44px
-  const rowW = M.tbw * 5 + gap * 4;
+  // tower row — centred, square, >= 44px (six in a duel: + the attack toggle)
+  const nb = G.duel ? 6 : 5;
+  const tbw = G.duel ? clamp(Math.floor((innerW - gap * 5) / 6), TOUCH_MIN, M.tbw) : M.tbw;
+  const rowW = tbw * nb + gap * (nb - 1);
   const bx0 = (W - rowW) / 2;
-  TOWER_KEYS.forEach((k, i) => {
-    const def = TOWERS[k];
-    const r = addRect('b' + k, bx0 + i * (M.tbw + gap), towY, M.tbw, M.tbw, () => selectBuild(k));
-    const spr = R.sprites.towers[k + '0'];
-    btn(x, r, def.key, String(def.cost), UI.buildKind === k, G.gold[NET.me] < def.cost, spr && spr.base);
-  });
+  drawBuildRow(x, (i) => [bx0 + i * (tbw + gap), towY, tbw, tbw]);
 
   // action row — wave call on the left, hero + the two spells on the right.
   // All three right-side buttons share one square size (M.actH, already
@@ -5250,20 +5562,19 @@ function drawHUDPortrait(x, W, H, M) {
   const aY = actY + (M.actH - sw) / 2;               // keep the row centred when sw shrank
   const sp0x = colX(0), sp1x = colX(1), heroX = colX(2);
   const startR = addRect('start', pad, aY, colX(rightN - 1) - gap - pad, sw, () => cmdStartWave());
-  panel(x, startR.x, startR.y, startR.w, startR.h, { gold: G.phase === 'prep', hi: G.phase === 'prep', r: 7 });
-  txt(x, G.phase === 'prep' ? 'DALGAYI ÇAĞIR' : 'SAVAŞ SÜRÜYOR', startR.x + startR.w / 2, startR.y + startR.h / 2 - 7,
-    11.5, G.phase === 'prep' ? '#ffe08a' : '#8a8578', 'center', 800);
-  txt(x, G.phase === 'prep' ? `+${Math.ceil(G.prepTimer / TICK_HZ)}s erken bonus` : `dalga ${WAVES.length}'e kadar`,
-    startR.x + startR.w / 2, startR.y + startR.h / 2 + 10, 9, '#a89f8a', 'center', 600, 'system-ui');
+  const [sl1, sl2, sHot] = startLabels();
+  panel(x, startR.x, startR.y, startR.w, startR.h, { gold: sHot, hi: sHot, r: 7 });
+  txt(x, sl1, startR.x + startR.w / 2, startR.y + startR.h / 2 - 7, 11.5, sHot ? '#ffe08a' : '#8a8578', 'center', 800);
+  txt(x, sl2, startR.x + startR.w / 2, startR.y + startR.h / 2 + 10, 9, '#a89f8a', 'center', 600, 'system-ui');
   SPELLS.forEach((sp, i) => {
     const r = addRect('sp' + i, i === 0 ? sp0x : sp1x, aY, sw, sw, () => triggerSpell(i));
-    const ready = G.spell[i].cd <= 0;
+    const ready = spellsOf(NET.me)[i].cd <= 0;
     panel(x, r.x, r.y, r.w, r.h, { hi: UI.spellAim === i, gold: ready, r: 7 });
     drawSpellIcon(x, i, r.x + r.w / 2, r.y + r.h / 2 - 3, 14, ready);
     txt(x, sp.key, r.x + 7, r.y + 9, 9, '#ffd76a', 'left', 800);
     if (!ready) {
       x.save(); x.fillStyle = 'rgba(6,8,12,0.62)'; roundRect(x, r.x, r.y, r.w, r.h, 7); x.fill();
-      txt(x, Math.ceil(G.spell[i].cd / TICK_HZ) + 's', r.x + r.w / 2, r.y + r.h / 2, 14, '#cfd6e0', 'center', 800); x.restore();
+      txt(x, Math.ceil(spellsOf(NET.me)[i].cd / TICK_HZ) + 's', r.x + r.w / 2, r.y + r.h / 2, 14, '#cfd6e0', 'center', 800); x.restore();
     }
   });
 
@@ -5373,6 +5684,12 @@ function drawInfoPanelPortrait(x, px, py, w, h) {
         L(`${ab.key} · ${ab.name}` + (ready ? ' — hazır' : ` — ${Math.ceil(hh.acd[i])}s`) + ' · ' + ab.lore,
           2 + i, 9, ready ? '#ffd76a' : '#7f8a72', 'system-ui');
       });
+    } else if (G.duel && (UI.sendMode || !k)) {
+      const L4 = duelInfoLines();
+      txt(x, L4[0], px + 10, py + 14, 13, '#ffe0a0', 'left', 800);
+      L(L4[1], 1, 9.5, '#c9bfa6', 'system-ui');
+      L(L4[2], 2, 9, '#8fe08a', 'system-ui');
+      L(L4[3], 3, 9, '#7f8a72', 'system-ui');
     } else if (k) {
       const def = TOWERS[k], lv = def.lv[0];
       txt(x, def.name, px + 10, py + 14, 13, '#ffe0a0', 'left', 800);
@@ -5477,6 +5794,12 @@ function drawInfoPanel(x, px, py, w, h, S) {
         txt(x, `${ab.key} · ${ab.name}` + (ready ? '' : ` (${Math.ceil(hh.acd[i])}s)`), px + 10, py + (49 + i * 24) * S, 9.5 * S, ready ? '#ffd76a' : '#7f8a72', 'left', 700, 'system-ui');
         txt(x, fitText(x, ab.lore, w - 20, 8.5 * S, 'system-ui', 600), px + 10, py + (60 + i * 24) * S, 8.5 * S, '#9a917f', 'left', 600, 'system-ui');
       });
+    } else if (G.duel && (UI.sendMode || !k)) {
+      const L4 = duelInfoLines();
+      txt(x, L4[0], px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
+      wrapText(x, L4[1], px + 10, py + 32 * S, w - 20, 11 * S, 9.5 * S, '#c9bfa6');
+      txt(x, fitText(x, L4[2], w - 20, 9 * S, 'system-ui', 600), px + 10, py + h - 26 * S, 9 * S, '#8fe08a', 'left', 600, 'system-ui');
+      txt(x, fitText(x, L4[3], w - 20, 8.5 * S, 'system-ui', 600), px + 10, py + h - 12 * S, 8.5 * S, '#7f8a72', 'left', 600, 'system-ui');
     } else if (k) {
       const def = TOWERS[k], lv = def.lv[0];
       txt(x, def.name, px + 10, py + 15 * S, 12.5 * S, '#ffe0a0', 'left', 800);
@@ -5597,13 +5920,14 @@ function drawSpellIcon(x, i, cx, cy, r, ready) {
 }
 function drawEndScreen(x, W, H, S) {
   x.save(); x.fillStyle = 'rgba(4,6,10,0.78)'; x.fillRect(0, 0, W, H);
+  if (G.duel) { drawDuelEnd(x, W, H, S); x.restore(); return; }
   const won = G.phase === 'won';
   /* The shell adds a second row of buttons below the restart. At landscape
      phone heights that pushed the stack onto the bottom HUD bar, so the whole
      panel -- text included -- lifts by half the extra row and stays centred
      either way. Shifting only the buttons put them through the stats line. */
   let extraRow = Native.on ? Math.max(TOUCH_MIN, 40 * S) + 10 * S : 0;
-  if (!NET.active) extraRow += Math.max(TOUCH_MIN, 40 * S) + 10 * S;   // map / menu row
+  extraRow += Math.max(TOUCH_MIN, 40 * S) + 10 * S;   // map / menu row, or leave-room in co-op
   const cy = H / 2 - extraRow / 2;
   txt(x, won ? 'KAPI TUTULDU' : 'KAPI DÜŞTÜ', W / 2, cy - 60 * S, 40 * S, won ? '#ffd76a' : '#ff6a4a', 'center', 900);
   txt(x, won ? `${WAVES.length} dalga geri püskürtüldü.` : `Dalga ${(WAVES[G.waveIdx] || { n: 30 }).n}'de düştün.`, W / 2, cy - 18 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
@@ -5623,6 +5947,12 @@ function drawEndScreen(x, W, H, S) {
     const mn = addRect('endMenu', W / 2 - ebw / 2 + hw + 8 * S, hy, hw, hh2, () => leaveRun('lobby'));
     panel(x, mn.x, mn.y, mn.w, mn.h, { r: 8 });
     txt(x, 'ANA MENÜ', mn.x + mn.w / 2, mn.y + mn.h / 2, 11.5 * S, '#cfd6e0', 'center', 800);
+  } else {
+    // co-op had no way out of a room at all short of closing the app
+    const hy = r.y + ebh + 10 * S, hh2 = Math.max(TOUCH_MIN, 40 * S);
+    const lr = addRect('endLeave', W / 2 - ebw / 2, hy, ebw, hh2, () => leaveRoom());
+    panel(x, lr.x, lr.y, lr.w, lr.h, { r: 8 });
+    txt(x, 'ODADAN ÇIK', lr.x + lr.w / 2, lr.y + lr.h / 2, 11.5 * S, '#cfd6e0', 'center', 800);
   }
   /* Leaderboard and share, only inside the app shell -- in a browser there is
      nothing behind them, so they are not drawn at all rather than drawn dead.
@@ -5631,7 +5961,8 @@ function drawEndScreen(x, W, H, S) {
   if (Native.on) {
     const payload = { won, wave: won ? WAVES.length : G.waveIdx + 1,
                       difficulty: G.difficulty, score: G.score[NET.me] | 0 };
-    const sbw = (ebw - 8 * S) / 2, sy = r.y + ebh + 10 * S, sbh = Math.max(TOUCH_MIN, 40 * S);
+    const sbw = (ebw - 8 * S) / 2, sbh = Math.max(TOUCH_MIN, 40 * S);
+    const sy = r.y + ebh + 10 * S + sbh + 10 * S;   // below the map/menu (or leave-room) row
     const lb = addRect('gcBoard', W / 2 - ebw / 2, sy, sbw, sbh,
       () => Native.post('leaderboard', payload));
     panel(x, lb.x, lb.y, lb.w, lb.h, { r: 8 });
@@ -5642,6 +5973,43 @@ function drawEndScreen(x, W, H, S) {
     txt(x, 'PAYLAŞ', sh.x + sh.w / 2, sh.y + sh.h / 2, 12 * S, '#cfd6e0', 'center', 800);
   }
   x.restore();
+}
+
+function drawDuelEnd(x, W, H, S) {
+  const d = G.duel, me = myLane(), won = d.winner === me;
+  const title = d.winner === -3 ? 'BAĞLANTI KOPTU' : d.winner === -2 ? 'BERABERE' : won ? 'ZAFER' : 'YENİLGİ';
+  const col = d.winner === -2 || d.winner === -3 ? '#cfd6e0' : won ? '#ffd76a' : '#ff6a4a';
+  const sub = d.winner === -3 ? 'Rakiple bağlantı kesildi.'
+    : UI.duelForfeit ? (won ? 'Rakip oyundan ayrıldı.' : 'Oyundan ayrıldın.')
+    : d.winner === -2 ? 'İki kapı aynı anda düştü.'
+    : `${G.waveIdx + 1}. turda ${won ? 'rakibin' : 'senin'} kapın düştü.`;
+  const cy = H / 2 - 30 * S;
+  txt(x, title, W / 2, cy - 50 * S, 40 * S, col, 'center', 900);
+  txt(x, sub, W / 2, cy - 10 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
+  txt(x, `Can: sen ${Math.max(0, d.lives[me])} · rakip ${Math.max(0, d.lives[1 - me])} · gönderim geliri +${d.income[me]}/tur`,
+    W / 2, cy + 14 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
+  const ebw = Math.max(200, 200 * S), ebh = Math.max(TOUCH_MIN + 4, 44 * S);
+  let y = cy + 38 * S;
+  if (d.winner !== -3 && !UI.duelForfeit && NET.active && G.players > 1) {
+    const r = addRect('again', W / 2 - ebw / 2, y, ebw, ebh, () => issue({ k: 'restart' }));
+    panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: true, r: 8 });
+    txt(x, 'RÖVANŞ', r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#ffe08a', 'center', 800);
+    y += ebh + 10 * S;
+  }
+  const lr = addRect('endLeave', W / 2 - ebw / 2, y, ebw, Math.max(TOUCH_MIN, 40 * S), () => leaveRoom());
+  panel(x, lr.x, lr.y, lr.w, lr.h, { r: 8 });
+  txt(x, 'ODADAN ÇIK', lr.x + lr.w / 2, lr.y + lr.h / 2, 12 * S, '#cfd6e0', 'center', 800);
+}
+/* Out of an online room and back to the main menu, on a fresh solo board. */
+function leaveRoom() {
+  NET.dropAll();
+  try { if (NET.peer) NET.peer.destroy(); } catch (e) { }
+  NET.peer = null; NET.active = false; NET.isHost = true; NET.me = 0; NET.room = ''; NET.status = 'solo';
+  NET.guestMeta.fill(null);
+  G.mode = 'std'; G.duel = null; G.players = 1; UI.sendMode = false; UI.duelForfeit = false;
+  G.mapSeed = MAPS[0].seed; resetRun(G.mapSeed);
+  closeMenu();
+  $('lobby').classList.remove('hidden'); setLobbyMode('main'); refreshLobbyProgress();
 }
 
 /* ============================================================
@@ -5664,6 +6032,9 @@ function issue(cmd) {
    below carries the regenerated grid across on the next send. */
 function resetRun(seed) {
   G.mapSeed = seed !== undefined ? seed : (G.mapSeed !== undefined ? G.mapSeed : 20260803);
+  // A duel always plays its own mirrored board on the normal curve.
+  if (G.mode === 'duel') { G.duel = makeDuelState(); G.mapSeed = DUEL.seed; G.difficulty = 'normal'; G.endless = false; }
+  else G.duel = null;
   applyDifficulty(); // rebuilds WAVES and resets G.lives for the current tier
   /* Reseed the simulation RNG. setSeed existed but was never called, so
      SIMRAND just kept running: restarting a map continued the stream rather
@@ -5674,13 +6045,15 @@ function resetRun(seed) {
   G.waveIdx = 0; G.spawnGroupIdx = 0; G.spawnLeft = 0; G.spawnTimer = 0;
   G.prepTimer = 30 * TICK_HZ;
   G.gold = new Array(MAX_PLAYERS).fill(SOLO_START_GOLD);
-  if (NET.active) setCoopEconomy();
+  if (NET.active && !G.duel) setCoopEconomy();
   // Meta gold bonus (item 4) is per-player: owner 0 is always this machine's
   // own profile (solo or host), and each guest slot uses the profile that
   // arrived with its handshake (NET.guestMeta[slot]), the same resolution
-  // metaProfileFor() uses for the damage bonus.
-  G.gold[0] += Math.round(metaBonus(META, 'gold'));
-  if (NET.active) for (let i = 1; i < MAX_PLAYERS; i++) G.gold[i] += Math.round(metaBonus(NET.guestMeta[i] || EMPTY_META, 'gold'));
+  // metaProfileFor() uses for the damage bonus. Not in a duel.
+  if (!G.duel) {
+    G.gold[0] += Math.round(metaBonus(META, 'gold'));
+    if (NET.active) for (let i = 1; i < MAX_PLAYERS; i++) G.gold[i] += Math.round(metaBonus(NET.guestMeta[i] || EMPTY_META, 'gold'));
+  }
   G.score = new Array(MAX_PLAYERS).fill(0); G.leaked = 0; G.killed = 0;
   G.creeps = []; G.towers = []; G.projs = []; G.nextId = 1;
   // A seat only gets a hero once its player is actually connected; joinPlayer
@@ -5689,6 +6062,7 @@ function resetRun(seed) {
   G.heroes = new Array(MAX_PLAYERS).fill(null);
   for (let i = 0; i < (NET.active ? G.players : 1); i++) G.heroes[i] = spawnHero(i);
   G.spell[0].cd = 0; G.spell[1].cd = 0;
+  if (G.duel) G.prepTimer = DUEL.prepSec * TICK_HZ;
   G.speed = 1;
   EVQ.length = 0;
   UI.sel = null; UI.buildKind = null; UI.spellAim = null; UI.abilId = null; UI.toasts.length = 0;
@@ -5737,7 +6111,7 @@ function applyCmd(c, who) {
     const res = useAbility(t, who, c.x, c.y);
     if (!res.ok && who === NET.me) { UI.toast(res.why, '#ff9a8a'); Audio2.play('deny'); }
   } else if (c.k === 'spell') {
-    if (castSpell(c.i, c.x, c.y, who)) { if (c.i === 1) ev('blizzard', {}); }
+    castSpell(c.i, c.x, c.y, who);   // castSpell emits its own blizzard event
   } else if (c.k === 'heroMove') {
     // who IS the hero index (each player only ever commands their own hero)
     const h = G.heroes[who];
@@ -5754,6 +6128,16 @@ function applyCmd(c, who) {
     }
   } else if (c.k === 'speed') {
     G.speed = clamp(c.v | 0, 1, 3);
+  } else if (c.k === 'send') {
+    const res = sendUnits(who, c.i | 0);
+    if (!res.ok && who === NET.me) { UI.toast(res.why, '#ff9a8a'); Audio2.play('deny'); }
+  } else if (c.k === 'start' && G.duel) {
+    // in a duel "start" is a ready toggle: the round opens when both are ready
+    if (G.phase === 'prep') {
+      const l = laneOfOwner(who);
+      G.duel.ready[l] = G.duel.ready[l] ? 0 : 1;
+      ev('ready', { who, on: G.duel.ready[l] });
+    }
   } else if (c.k === 'start') {
     if (G.phase === 'prep') {
       // paid to each player, so halve it in co-op to keep the pot the same as solo
@@ -5773,6 +6157,26 @@ function cmdSpeed(cycle, want) {
   if (v !== G.speed) { issue({ k: 'speed', v }); Audio2.play('ui'); }
 }
 function cmdStartWave() { issue({ k: 'start' }); }
+function cmdSend(i) {
+  const sd = SENDS[i];
+  if (!sd || G.gold[NET.me] < sd.cost) { Audio2.play('deny'); UI.toast('Altın yetersiz', '#ff9a8a'); return; }
+  issue({ k: 'send', i }); Audio2.play('ui');
+}
+/* Info-panel text for a duel when nothing is selected: [title, line, line, line]. */
+function duelInfoLines() {
+  const me = myLane(), d = G.duel;
+  const queued = (l) => NET.active && !NET.isHost ? ((d.queued && d.queued[l]) | 0) : d.sendQ[l].length;
+  const onMe = G.creeps.filter(c => !c.dead && (c.lane | 0) === me).length + queued(me);
+  if (UI.sendMode) {
+    return ['SALDIRI',
+      'Birlikler rakibin şeridine iner. Tur arasında gönderilenler bir sonraki turu bekler.',
+      `Her gönderim gelirini kalıcı artırır · şu an +${d.income[me]}/tur`,
+      `Rakibe yolda: ${queued(1 - me)} birlik`];
+  }
+  return ['DÜELLO', 'Şeridini savun, rakibin şeridine asker gönder.',
+    `Şeridinde ${onMe} düşman · rakibin canı ${Math.max(0, d.lives[1 - me])}`,
+    'SALDIR düğmesi: gönderim menüsü'];
+}
 /* One button, two jobs. A maxed, branched tower's UPGRADE slot was dead --
    it just read "MAKS" and did nothing. It now offers reinforcement instead,
    which is where late-game gold goes, and costs no extra button in a layout
@@ -5814,7 +6218,7 @@ function cmdHeroAbility(i) {
   issue({ k: 'heroAbil', i }); Audio2.play('ui');
 }
 function triggerSpell(i) {
-  if (G.spell[i].cd > 0) { Audio2.play('deny'); return; }
+  if (spellsOf(NET.me)[i].cd > 0) { Audio2.play('deny'); return; }
   if (i === 1) { issue({ k: 'spell', i: 1, x: 0, y: 0 }); Audio2.play('ui'); }
   else { UI.spellAim = UI.spellAim === 0 ? null : 0; UI.buildKind = null; Audio2.play('ui'); }
 }
@@ -5883,6 +6287,10 @@ function nextWaveAirShare() {
   return all ? air / all : 0;
 }
 const HINTS = [
+  { id: 'duel', title: 'Düello',
+    body: 'SALDIR düğmesiyle rakibin şeridine asker gönder; her gönderim tur gelirini kalıcı artırır. Tur, ikiniz de HAZIR deyince başlar.',
+    when: () => !!G.duel && G.players > 1 && G.phase === 'prep',
+    focus: () => ({ rect: 'bsend' }) },
   { id: 'hero', title: 'Kahramanın boşta',
     body: 'Alp kapıda bekliyor. Ona dokun, sonra yola dokun: yerdeki düşmanları durdurur ve dövüştükçe güçlenir.',
     when: () => G.phase === 'prep' && G.waveIdx >= 2 && !TUT.heroMoved && G.heroes[NET.me] && !G.heroes[NET.me].dead,
@@ -5950,7 +6358,7 @@ const TUT = {
   running() { return this.step >= 0; },
   /* The clock only stops for the walkthrough, only in solo, and not during
      the one step that is about watching wave 1 play out. */
-  holdPrep() { return this.step >= 0 && this.step !== TUT_FREE && !NET.active; },
+  holdPrep() { return this.step >= 0 && this.step !== TUT_FREE && !NET.active && !G.duel; },
   seen(id) { return !!TIPS.seen[id]; },
   markSeen(id) {
     if (TIPS.seen[id]) return;
@@ -5958,7 +6366,7 @@ const TUT = {
   },
   onRunStart() {
     this.hint = null; this.heroMoved = false; this.cell = null; this.cellKey = ''; this.camStep = -1;
-    this.step = (!NET.active && !TIPS.tut) ? 0 : -1;
+    this.step = (!NET.active && !G.duel && !TIPS.tut) ? 0 : -1;
   },
   onCmd(c) { if (c.k === 'heroMove') this.heroMoved = true; },
   finish() {
@@ -5984,7 +6392,9 @@ const TUT = {
   },
   update(dt) {
     if (this.step >= 0) {
-      if (G.phase === 'over' || G.phase === 'won' || NET.active) { this.finish(); return; }
+      // online play drops the walkthrough without counting it as seen
+      if (NET.active || G.duel) { this.step = -1; return; }
+      if (G.phase === 'over' || G.phase === 'won') { this.finish(); return; }
       // the player can run ahead of the script (call the wave early, say);
       // jump forward rather than asking for something that already happened
       if (G.phase === 'wave' && this.step < TUT_FREE) this.step = TUT_FREE;
@@ -6203,7 +6613,8 @@ function bindInput(cv) {
           UI.ghostRoute = pv.route;
           UI.ghostAbandon = pv.coverBefore > 0.15 ? Math.max(0, pv.coverBefore - pv.coverAfter) / pv.coverBefore : 0;
         } else {
-          UI.placeOK = inGrid(gx, gy) && G.grid[idxOf(gx, gy)] === 0;
+          UI.placeOK = inGrid(gx, gy) && G.grid[idxOf(gx, gy)] === 0 &&
+            (!G.duel || laneOfY(gy * TILE + TILE / 2) === myLane());
           UI.ghostRoute = null; UI.ghostAbandon = 0;
         }
       }
@@ -6386,7 +6797,10 @@ function processEvents(list) {
       case 'healTick': FX.healTick(e.x, e.y); break;
       case 'smite': FX.smite(e.x, e.y, e.r); break;
       case 'abilFx': FX.ring(e.ax, e.ay, 4, 46, e.kind === 'storm' ? '160,220,255' : '255,200,120', 0.5, 3); break;
-      case 'blizzard': FX.blizzard = 1.4; FX.blizzardBurst(e.x || WORLD_W / 2, e.y || WORLD_H / 2); break;
+      case 'blizzard':
+        // in a duel the full-screen frost is only for the lane it fell on
+        if (!G.duel || laneOfY(e.y || 0) === myLane()) FX.blizzard = 1.4;
+        FX.blizzardBurst(e.x || WORLD_W / 2, e.y || WORLD_H / 2); break;
       case 'kill':
         FX.death(e.x, e.y, e.boss, e.ctype);
         if (e.owner === NET.me) FX.gold(e.x, e.y - 10, e.gold);
@@ -6394,14 +6808,33 @@ function processEvents(list) {
         if (e.boss) { UI.toast('Kağan devrildi! +' + e.gold, '#ffd76a'); Native.haptic('heavy'); }
         break;
       case 'leak':
-        FX.leak(e.x, e.y, e.boss); Audio2.play('leak', 1); Native.haptic('warning');
+        FX.leak(e.x, e.y, e.boss);
+        if (G.duel && (e.lane | 0) !== myLane()) { UI.toast(`Rakibin kapısından sızdı! −${e.amt}`, '#8fe08a'); break; }
+        Audio2.play('leak', 1); Native.haptic('warning');
         UI.toast(`Kapıdan sızdı! −${e.amt} can`, '#ff7a6a');
         break;
       case 'waveStart':
         Audio2.play('wave'); UI.toast(`Dalga ${e.n} — ${CREEPS[e.ctype].name}`, e.boss ? '#ff8a5a' : '#ffe0a0');
         FX.flash = 0.10; FX.flashCol = e.boss ? '255,80,40' : '255,220,150';
         break;
-      case 'waveClear': UI.toast(`Dalga ${e.n} temizlendi · +${e.bonus} altın`, '#8fe08a'); Audio2.play('coin'); break;
+      case 'waveClear': {
+        const inc = e.inc ? e.inc[myLane()] : 0;
+        UI.toast(`Dalga ${e.n} temizlendi · +${e.bonus + inc} altın` + (inc ? ` (gelir ${inc})` : ''), '#8fe08a'); Audio2.play('coin'); break;
+      }
+      case 'send': {
+        const sd = SENDS[e.i], nm = CREEPS[sd.type].name;
+        if (e.to === myLane()) { UI.toast(`Rakip ${e.n} ${nm} gönderdi!`, '#ff9a6a'); Native.haptic('warning'); Audio2.play('wave', 0.6); }
+        else { UI.toast(`${e.n} ${nm} rakibe gönderildi`, '#ffd76a'); Audio2.play('build', 0.7); }
+        break;
+      }
+      case 'ready':
+        if (laneOfOwner(e.who) !== myLane() && e.on) UI.toast('Rakip hazır', '#9fd8ff');
+        break;
+      case 'duelEnd':
+        UI.duelForfeit = !!e.forfeit;
+        if (e.winner === myLane()) { Audio2.play('victory'); Native.haptic('success'); }
+        else { Audio2.play('defeat'); Native.haptic('error'); }
+        break;
       case 'early': UI.toast(`Erken çağrı bonusu +${e.bonus}`, '#ffd76a'); break;
       case 'build': Audio2.play('build'); FX.ring(e.x, e.y, 4, 34, '255,220,140', 0.4, 3); Native.haptic('light'); break;
       case 'sell': Audio2.play('sell'); FX.ring(e.x, e.y, 4, 30, '200,220,255', 0.35, 2); break;
@@ -6425,7 +6858,7 @@ function panOf(wx) { if (wx === undefined) return 0; return clamp((wx - R.cam.x)
 const KIDX = TOWER_KEYS, CIDX = Object.keys(CREEPS);
 function snapshot() {
   const cr = [];
-  for (const c of G.creeps) cr.push([c.id, CIDX.indexOf(c.type), Math.round(c.x * 4) / 4, Math.round(c.y * 4) / 4, Math.round(c.z), Math.round(c.hp), c.maxHp, c.dir, c.frame, c.slow > 0 ? 1 : 0, c.dotT > 0 ? 1 : 0, c.dead ? 1 : 0, Math.round(c.deathT * 20), Math.round(c.vx), Math.round(c.vy)]);
+  for (const c of G.creeps) cr.push([c.id, CIDX.indexOf(c.type), Math.round(c.x * 4) / 4, Math.round(c.y * 4) / 4, Math.round(c.z), Math.round(c.hp), c.maxHp, c.dir, c.frame, c.slow > 0 ? 1 : 0, c.dotT > 0 ? 1 : 0, c.dead ? 1 : 0, Math.round(c.deathT * 20), Math.round(c.vx), Math.round(c.vy), c.lane | 0, c.sentBy === undefined ? -1 : c.sentBy]);
   const tw = [];
   // slot 12 (t.acd, the tower-owned ability's own cooldown in seconds) is
   // APPENDED here -- constraint: appending is safe, existing slots 0-11 keep
@@ -6455,6 +6888,11 @@ function snapshot() {
   const hr = G.heroes.map(h => h ? [Math.round(h.x), Math.round(h.y), Math.round(h.hp), Math.round(h.maxHp), h.level, h.dead ? 1 : 0, Math.round(h.respawnT * 10) / 10, h.dir, h.frame, Math.round(heroXpFrac(h) * 100),
     Math.max(0, Math.round(h.acd[0] * 10) / 10), Math.max(0, Math.round(h.acd[1] * 10) / 10), Math.max(0, Math.round(h.wallT * 10) / 10)] : null);
   const s = { t: 's', k: G.tick, ph: G.phase, lv: G.lives, gd: G.gold.map(v => v | 0), pl: G.players, wi: G.waveIdx, pt: G.prepTimer, sl: G.spawnLeft, sg: G.spawnGroupIdx, sp: [G.spell[0].cd, G.spell[1].cd], cr, tw, pr, hr, kd: G.killed, lk: G.leaked, sc: G.score, sd: G.speed, ms: G.mapSeed, ev: EVQ.slice() };
+  if (G.duel) {
+    const d = G.duel;
+    s.du = { lv: d.lives.slice(), in: d.income.slice(), rd: d.ready.slice(), wn: d.winner,
+             sp: d.spell.map(p => [p[0].cd, p[1].cd]), q: [d.sendQ[0].length, d.sendQ[1].length] };
+  }
   if (NET.gridDirty) { s.g = Array.from(G.grid); NET.gridDirty = false; }
   return s;
 }
@@ -6468,6 +6906,12 @@ function applySnapshot(s) {
   G.prepTimer = s.pt; G.spawnLeft = s.sl; G.spawnGroupIdx = s.sg | 0; G.killed = s.kd; G.leaked = s.lk; G.score = s.sc;
   if (s.sd) G.speed = s.sd;
   G.spell[0].cd = s.sp[0]; G.spell[1].cd = s.sp[1];
+  if (s.du) {
+    if (!G.duel) G.duel = makeDuelState();
+    const d = G.duel;
+    d.lives = s.du.lv; d.income = s.du.in; d.ready = s.du.rd; d.winner = s.du.wn; d.queued = s.du.q;
+    for (let l = 0; l < 2; l++) { d.spell[l][0].cd = s.du.sp[l][0]; d.spell[l][1].cd = s.du.sp[l][1]; }
+  }
   // Item 6 (multiple maps): the host may be running a different seed than
   // whatever this client last baked (its own boot default, or a stale
   // previous map). `ms` is a cheap scalar to compare -- when it changes,
@@ -6491,6 +6935,7 @@ function applySnapshot(s) {
     c.hp = a[5]; c.maxHp = a[6]; c.dir = a[7]; c.frame = a[8];
     c.slow = a[9] ? 0.4 : 0; c.dotT = a[10]; c.dead = !!a[11]; c.deathT = a[12] / 20;
     c.vx = a[13]; c.vy = a[14];
+    c.lane = a[15] | 0; c.sentBy = a[16] === undefined ? -1 : a[16];   // appended (protocol 5)
     return c;
   });
   const oldT = new Map(G.towers.map(t => [t.id, t]));
@@ -6566,6 +7011,8 @@ function joinPlayer(slot) {
 }
 function leavePlayer(slot) {
   if (!NET.isHost) return;
+  // walking out of a duel concedes it
+  if (G.duel && G.phase !== 'over') endDuel(laneOfOwner(NET.me), true);
   // Their towers stay standing and keep earning into their purse: tearing a
   // departed ally's defence down mid-run would be far worse than leaving it,
   // and the seat is reusable, so a reconnect picks up where they left off.
@@ -6584,7 +7031,8 @@ function leavePlayer(slot) {
    should be. COOP_SHARE tunes how much of that fragmentation is refunded. */
 const COOP_SHARE = 0.60;
 function coopDivisor() { return 1 + (Math.max(1, G.players) - 1) * COOP_SHARE; }
-function sharedBonus(raw) { return NET.active ? Math.round(raw / coopDivisor()) : raw; }
+// a duel player faces a whole wave alone, so each gets the whole bonus
+function sharedBonus(raw) { return NET.active && !G.duel ? Math.round(raw / coopDivisor()) : raw; }
 function payAll(amount) { for (let i = 0; i < G.players; i++) G.gold[i] += amount; }
 /* Applies the lobby's picked difficulty. Only the host's simulation ever
    drives gameplay (only the host runs simTick), so this is called on every
@@ -6598,6 +7046,11 @@ function payAll(amount) { for (let i = 0; i < G.players; i++) G.gold[i] += amoun
    need one and is left for later. */
 function applyDifficulty() {
   WAVES = buildWaves(G.difficulty, G.mapSeed);
+  if (G.duel) for (const w of WAVES) {
+    const k = 1 + DUEL.hpRamp * (w.n - 1);
+    for (const g of w.groups) g.hp = Math.round(g.hp * k);
+    w.unitHp *= k;
+  }
   // Lives are a shared co-op resource, so the meta bonus here always comes
   // from META (this machine's own profile) -- applyDifficulty only ever
   // runs on the authoritative side (solo, or the host via resetRun/netHost),
@@ -6609,17 +7062,23 @@ function applyDifficulty() {
    on its own no longer tells you enough. */
 function hostLobbyMsg() {
   if (!NET.isHost || !NET.room) return;
+  const duel = G.mode === 'duel', seats = duel ? 2 : MAX_PLAYERS;
   let rows = '';
-  for (let i = 0; i < MAX_PLAYERS; i++) {
+  for (let i = 0; i < seats; i++) {
     const here = i === 0 || (NET.conns[i] && NET.conns[i].open);
-    const label = i === 0 ? 'Sen (kurucu)' : here ? 'Oyuncu ' + (i + 1) : 'boş';
+    const label = i === 0 ? 'Sen (kurucu)' : here ? (duel ? 'Rakip' : 'Oyuncu ' + (i + 1)) : 'boş';
     rows += '<div style="display:flex;align-items:center;gap:8px;margin:3px 0' + (here ? '' : ';opacity:0.38') + '">' +
       '<span style="width:10px;height:10px;border-radius:50%;background:' + OWNER_COL[i] + '"></span>' +
       '<span>' + label + '</span></div>';
   }
-  lobbyMsg('Oda kodu: <b style="font-size:22px;letter-spacing:3px">' + NET.room + '</b>' +
-    '<br><span class="dim">Arkadaşların bu kodu girsin — en fazla ' + MAX_PLAYERS + ' oyuncu.</span>' +
-    '<div style="margin:10px 0;text-align:left;display:inline-block">' + rows + '</div>' +
+  const head = 'Oda kodu: <b style="font-size:22px;letter-spacing:3px">' + NET.room + '</b>' +
+    (duel ? '<br><span class="dim">Düello · rakibin bu kodu girsin.</span>'
+          : '<br><span class="dim">Arkadaşların bu kodu girsin — en fazla ' + MAX_PLAYERS + ' oyuncu.</span>') +
+    '<br><div style="margin:10px 0;text-align:left;display:inline-block">' + rows + '</div>';
+  // A co-op host may start alone and let friends drop in. A duel cannot be
+  // played against nobody, so it waits, and starts itself when the rival joins.
+  if (duel) { lobbyMsg(head + '<br><span class="dim">Rakip katılınca maç kendiliğinden başlar.</span>'); return; }
+  lobbyMsg(head +
     '<br><span class="dim">Beklerken oynamaya başlayabilirsin; katılanlar oyuna dahil olur.</span>' +
     '<br><button id="btnGo" class="btn" style="margin-top:10px">Beklerken başla</button>');
   const b = document.getElementById('btnGo'); if (b) b.onclick = () => closeLobby();
@@ -6655,13 +7114,16 @@ function netHost(code, attempt) {
         clearTimeout(timer);
         if (d.ver !== NET_PROTOCOL) { reject('ver'); return; }
         slot = NET.freeSlot();
-        if (slot < 0) { reject('full'); return; }
+        // a duel is one against one: the second guest finds the room full
+        if (slot < 0 || (G.mode === 'duel' && slot > 1)) { reject('full'); return; }
         seated = true;
         NET.conns[slot] = conn;
         NET.guestMeta[slot] = d.meta || null;
         NET.gridDirty = true;
-        try { conn.send({ t: 'hello', slot, max: MAX_PLAYERS, ver: NET_PROTOCOL, app: APP_VERSION }); } catch (e) { }
+        try { conn.send({ t: 'hello', slot, max: MAX_PLAYERS, ver: NET_PROTOCOL, app: APP_VERSION, mode: G.mode }); } catch (e) { }
         joinPlayer(slot);
+        // a duel does not start until the opponent is in; start it clean now
+        if (G.mode === 'duel') { resetRun(G.mapSeed); closeLobby(); NET.status = 'düello · bağlı'; UI.toast('Rakip katıldı — düello başlıyor!', '#8fe08a'); hostLobbyMsg(); return; }
         NET.status = 'bağlı · ' + G.players + ' oyuncu';
         closeLobby(); UI.toast('Müttefik katıldı! (' + G.players + ' oyuncu)', '#8fe08a');
         hostLobbyMsg();
@@ -6716,6 +7178,11 @@ function netJoin(code) {
       else if (d.t === 'hello') {
         settled = true;
         NET.me = d.slot | 0; NET.status = 'bağlı';
+        // the room decides the mode; a duel guest rebuilds as soon as the
+        // first snapshot names the map (G.mapSeed -1 forces that rebuild)
+        G.mode = d.mode === 'duel' ? 'duel' : 'std';
+        G.duel = G.mode === 'duel' ? makeDuelState() : null;
+        if (G.duel) G.mapSeed = -1;
         closeLobby(); UI.toast('Odaya katıldın — oyuncu ' + (NET.me + 1), '#8fe08a');
       } else if (d.t === 'bad' || d.t === 'full') {
         settled = true; NET.active = false;
@@ -6725,6 +7192,13 @@ function netJoin(code) {
       }
     });
     conn.on('error', () => { if (!settled) lobbyMsg('Odaya ulaşılamadı. Kodu kontrol et.'); });
+    conn.on('close', () => {
+      if (!settled || !NET.active) return;
+      NET.status = 'bağlantı koptu';
+      // the host is gone: in a duel that is the host conceding
+      if (G.duel && G.phase !== 'over') { G.duel.winner = myLane(); G.phase = 'over'; UI.duelForfeit = true; }
+      UI.toast('Bağlantı koptu', '#ff9a8a');
+    });
     setTimeout(() => {
       if (settled || NET.status === 'bağlı') return;
       // The link opened but nothing came back: either the room does not exist,
@@ -6889,6 +7363,10 @@ function syncMenu() {
   $('mSfx').textContent = 'Sesler: ' + (Audio2.enabled ? 'açık' : 'kapalı');
   $('mAuto').textContent = 'Otomatik dalga: ' + (G.autoStart ? 'açık' : 'kapalı');
   $('mEnd').textContent = 'Sonsuz mod: ' + (G.endless ? 'açık' : 'kapalı');
+  // online, the run is not one player's to reset or reconfigure -- the way
+  // out is leaving the room (which concedes a duel)
+  $('mSetup').textContent = NET.active ? (G.duel ? 'Odadan çık (hükmen yenilgi)' : 'Odadan çık') : 'Harita ve zorluk değiştir';
+  for (const id of ['mRestart', 'mAuto', 'mEnd']) $(id).style.display = G.duel ? 'none' : '';
 }
 function randomCode() { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += c[(Math.random() * c.length) | 0]; return s; }
 function renderMetaTree() {
@@ -7021,8 +7499,19 @@ function wireShell() {
   mapSelect.onchange = () => { G.mapSeed = Number(mapSelect.value); refreshSetupRecord(); };
   $('btnMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
   $('metaClose').onclick = () => $('meta').classList.add('hidden');
-  $('btnSolo').onclick = () => openSetup('solo');
-  $('btnHost').onclick = () => { $('joinRow').classList.add('hidden'); openSetup('host'); };
+  $('btnSolo').onclick = () => { G.mode = 'std'; openSetup('solo'); };
+  $('btnHost').onclick = () => { G.mode = 'std'; $('joinRow').classList.add('hidden'); openSetup('host'); };
+  // A duel has nothing to set up (its own mirrored board, normal curve), so
+  // it goes straight to opening the room.
+  $('btnDuel').onclick = async () => {
+    G.mode = 'duel';
+    Audio2.init();
+    $('joinRow').classList.add('hidden'); setLobbyMode('net');
+    if (!secureOk()) return;
+    if (!await ensurePeer()) { lobbyMsg(NOPEER); return; }
+    lobbyMsg('Düello odası açılıyor…');
+    netHost(randomCode());
+  };
   $('setupBack').onclick = () => { closeSetup(); $('lobby').classList.remove('hidden'); setLobbyMode('main'); };
   $('setupGo').onclick = async () => {
     if (setupMode === 'solo') {
@@ -7059,7 +7548,7 @@ function wireShell() {
   $('mAuto').onclick = () => { G.autoStart = !G.autoStart; syncMenu(); };
   $('mEnd').onclick = () => { G.endless = !G.endless; syncMenu(); };
   $('mRestart').onclick = () => { issue({ k: 'restart' }); closeMenu(); };
-  $('mSetup').onclick = () => leaveRun('setup');
+  $('mSetup').onclick = () => NET.active ? leaveRoom() : leaveRun('setup');
   $('mHelp').onclick = () => { $('help').classList.toggle('hidden'); };
   $('mMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
   $('helpClose').onclick = () => $('help').classList.add('hidden');
