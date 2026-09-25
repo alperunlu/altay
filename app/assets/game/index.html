@@ -1382,225 +1382,708 @@ function bakeUnit(def) {
       const { c, x } = makeCanvas(S, S);
       x.translate(S / 2, S * 0.62);
       drawCreature(x, def, d, f);
-      outlineSprite(c, 'rgba(6,4,9,0.97)', def.big ? 2.3 : 1.9);
+      outlineSprite(c, 'rgba(6,4,9,0.97)', def.big ? 2.2 : 1.8);
+      /* Light touch, same lesson as the hero bake: the old 0.56-0.9 rim plus
+         a 1.34x saturation boost was compensating for a body with no shading
+         of its own. Every part now carries its own gradient, and at those
+         strengths the rim washed the lower edges cream and pushed the palette
+         back toward cartoon -- away from the painted hero it shares a field
+         with. */
       const armorTier = def.armor || 0;
-      rimLight(c, LIGHT.x * 1.9, LIGHT.y * 1.9, 'rgba(255,246,214,1)', 0.56 + Math.min(0.34, armorTier * 0.08));
-      if (armorTier >= 3) rimLight(c, LIGHT.x * 3.1, LIGHT.y * 3.1, 'rgba(206,224,255,0.9)', 0.34); // cold steel sheen — heavy/fortress read as armored at a glance
-      lightPass(c, 0.20 + armorTier * 0.015, 0.16, def.tint || null);
-      // saturation/contrast punch-up so 24-30px silhouettes read clearly against the
-      // now-textured, fairly desaturated terrain instead of blending into it
-      row.push(boostContrast(c));
+      rimLight(c, LIGHT.x * 1.4, LIGHT.y * 1.4, 'rgba(255,246,214,1)', 0.24 + Math.min(0.12, armorTier * 0.03));
+      lightPass(c, 0.16 + armorTier * 0.01, 0.14, def.tint || null);
+      row.push(boostContrast(c, 1.1, 1.1, 1.0));
     }
     sheets.push(row);
   }
   return sheets;
 }
 
-function drawCreature(x, def, d, f) {
-  const [fx, fy] = dirVec(d);
-  const back = fy < -0.35, front = fy > 0.35;
-  const side = Math.abs(fx);
-  const ph = f / FRAMES * TAU;
-  const swing = Math.sin(ph), bob = Math.cos(ph * 2) * def.s * 0.045;
-  const s = def.s, P = def.pal;
-  const hr = s * def.head * 1.95;                 // chibi head — readability first
-  const shoulderW = s * 0.34, hipW = s * 0.22;
-  const chestY = -s * 0.08, hipY = s * 0.16;
-  const headY = chestY - s * 0.30 - hr * 0.55 + fy * s * 0.02;
-  const headX = fx * s * 0.07;
+/* ============================================================
+   CREATURES -- one painter per creature
+   ============================================================
+   The first bestiary drew all fourteen enemies through ONE parametric body:
+   a round torso, a round head, two eyes and a stick, with only the colours
+   and the size changing. Ten of the fourteen came out as the same figure,
+   and the names stopped meaning anything -- the one-eyed Tepegöz had two
+   eyes, the many-headed Yelbegen had one, the sky dragon was an orange ball
+   with wings, and the final boss read as a large kobold.
+   Each creature now has its own painter and, above all, its own SILHOUETTE,
+   because at 30-40px on a phone the outline is the only thing that reads:
+   big ears and a spear, dangling arms, a shield and a pointed helm, one eye,
+   three heads, a real neck and tail. Palettes are darker and less saturated
+   than before so the bestiary sits in the same world as the painted hero.
+   Conventions shared by every painter (see crCtx): origin at the unit's
+   position, ground line at G = s*0.52 below it, +y down; `fx`/`fy` is the
+   facing from dirVec (fy > 0 is toward the camera); `ws` is the lead-hand
+   side; faces are only drawn when not seen from behind. */
+const CPAL = {
+  kobold:   { hide: [150, 96, 52], dark: [86, 52, 30], belly: [202, 158, 104], leather: [74, 52, 34], bone: [226, 214, 186], wood: [108, 78, 46], eye: '#ffd84a' },
+  ghoul:    { skin: [134, 150, 124], dark: [72, 86, 72], rag: [70, 60, 52], claw: [224, 218, 192], hair: [44, 42, 38], mouth: [52, 18, 22], eye: '#c8ff6a' },
+  grunt:    { skin: [100, 130, 78], iron: [74, 82, 96], ironLite: [150, 162, 180], cloth: [140, 42, 36], leather: [84, 60, 38], wood: [112, 80, 48], gold: [196, 152, 62], eye: '#ff9a4a' },
+  harpy:    { feather: [112, 84, 126], dark: [60, 42, 72], lite: [180, 146, 192], skin: [214, 186, 168], hair: [36, 24, 42], talon: [210, 192, 118], eye: '#ffb0f0' },
+  gargoyle: { stone: [112, 114, 122], dark: [60, 62, 72], lite: [170, 172, 180], wing: [82, 82, 96], crack: [36, 36, 44], eye: '#ff8a3a' },
+  ogre:     { skin: [146, 114, 82], dark: [100, 70, 48], hide: [96, 70, 44], fur: [132, 104, 72], wood: [94, 66, 40], horn: [230, 218, 190], mouth: [70, 24, 22], eye: '#fff0a0' },
+  wraith:   { cloak: [34, 40, 60], lite: [72, 88, 118], bone: [206, 214, 206], blade: [192, 222, 232], glow: '#7ef2ff' },
+  khan:     { armor: [52, 44, 60], lite: [112, 98, 124], ember: [255, 96, 52], cape: [112, 24, 30], capeDark: [60, 12, 18], skin: [124, 54, 50], beard: [26, 20, 24], gold: [204, 154, 62], horn: [70, 62, 74], eye: '#ff4a2a' },
+  wyrm:     { scale: [54, 98, 152], dark: [26, 50, 90], belly: [216, 192, 124], wing: [76, 134, 184], wingDark: [34, 64, 104], horn: [232, 222, 192], eye: '#ffe14a' },
+  titan:    { rock: [104, 108, 100], dark: [58, 62, 58], lite: [156, 160, 150], moss: [84, 118, 62], mossLite: [132, 166, 90], wood: [86, 62, 40], leaf: [66, 108, 58], glow: '#8affd0' },
+  basci:    { robe: [60, 40, 80], dark: [30, 20, 42], fringe: [156, 116, 72], skin: [150, 110, 80], hide: [206, 176, 124], rim: [100, 70, 44], antler: [216, 202, 172], glow: '#c99bff', paint: [150, 40, 40] },
+  umay:     { robe: [228, 214, 178], dark: [152, 132, 98], gold: [216, 170, 72], goldLite: [255, 222, 140], skin: [208, 164, 122], hair: [58, 40, 30], eye: '#ffe9a0' },
+  yelbegen: { skin: [118, 82, 58], dark: [62, 40, 30], hide: [86, 64, 44], wood: [82, 60, 40], horn: [216, 202, 178], mouth: [60, 20, 18], eye: '#ff6a3a' }
+};
+CPAL.yelbegenYavru = CPAL.yelbegen;
 
-  x.save(); x.translate(0, -bob);
-
-  if (def.kind === 'flyer') drawWings(x, def, ph, chestY - s * 0.1, fx, fy, true);
-  if (def.cape || def.kind === 'wraith') {
-    for (let i = 0; i < 4; i++) {
-      const t = i / 4;
-      x.globalAlpha = 0.9 - t * 0.5;
-      ell(x, -fx * s * 0.10 + Math.sin(ph + i * 1.1) * s * 0.05, chestY + s * (0.10 + t * 0.34),
-        s * (0.34 - t * 0.10), s * (0.20 + t * 0.06), shade(P.body, 0.9 - t * 0.28));
-    }
-    x.globalAlpha = 1;
-  }
-
-  /* ---- legs ---- */
-  if (def.kind === 'wraith') {
-    for (let i = 0; i < 5; i++) {
-      const t = i / 5;
-      x.globalAlpha = 0.8 - t * 0.62;
-      ell(x, Math.sin(ph + i * 0.9) * s * 0.09, hipY + t * s * 0.42, s * (0.24 - t * 0.16), s * 0.13, shade(P.body, 1.05 - t * 0.35));
-    }
-    x.globalAlpha = 1;
-  } else if (def.kind !== 'flyer') {
-    const legLen = s * def.leg * 1.15;
-    for (const sgn of [-1, 1]) {
-      const sw = swing * sgn;
-      const hipX = sgn * hipW * (1 - side * 0.42) + fx * s * 0.03;
-      const kneeX = hipX + sw * s * 0.13 + fx * s * 0.07;
-      const footX = hipX + sw * s * 0.28 * (0.45 + side * 0.65) + fx * s * 0.11;
-      const footY = hipY + legLen - Math.max(0, sw) * s * 0.06;
-      capsule(x, hipX, hipY, kneeX, hipY + legLen * 0.55, s * 0.125, s * 0.10, P.limb);
-      capsule(x, kneeX, hipY + legLen * 0.52, footX, footY, s * 0.10, s * 0.085, P.limb);
-      ell(x, footX + fx * s * 0.055, footY + s * 0.035, s * 0.135, s * 0.075, shade(P.limb, 0.66));
-    }
-  } else {
-    for (const sgn of [-1, 1]) {
-      capsule(x, sgn * s * 0.12, hipY, sgn * s * 0.19 + swing * s * 0.05, hipY + s * 0.30, s * 0.075, s * 0.05, P.limb);
-      poly(x, [[0, 0], [sgn * s * 0.10, s * 0.06], [0, s * 0.09], [-sgn * s * 0.03, s * 0.04]], shade(P.horn, 0.9), 0, sgn * s * 0.19 + swing * s * 0.05, hipY + s * 0.30);
-    }
-  }
-
-  /* ---- torso: broad chest tapering to hips ---- */
-  ell(x, fx * s * 0.02, hipY - s * 0.02, hipW * 1.28, s * 0.19, shade(P.body, 0.92));
-  ell(x, fx * s * 0.03, chestY, shoulderW * (1 - side * 0.13), s * 0.26, P.body, 0, 1.62, 0.48);
-  if (!back) ell(x, fx * s * 0.07, chestY + s * 0.06, shoulderW * 0.52, s * 0.17, shade(P.body, 1.30), 0, 1.35, 0.75);
-  if (def.armorPlate && !back) {
-    ell(x, fx * s * 0.07, chestY + s * 0.02, shoulderW * 0.66, s * 0.21, P.armor, 0, 1.85, 0.46);
-    x.strokeStyle = `rgba(${P.accent[0]},${P.accent[1]},${P.accent[2]},0.55)`; x.lineWidth = 1.6;
-    x.beginPath(); x.ellipse(fx * s * 0.07, chestY + s * 0.02, shoulderW * 0.44, s * 0.14, 0, 0, TAU); x.stroke();
-    ell(x, fx * s * 0.07, chestY + s * 0.02, s * 0.045, s * 0.045, P.accent, 0, 1.9, 0.8);
-  }
-  if (def.shoulder) {
-    for (const sgn of [-1, 1]) {
-      const px = sgn * shoulderW * (1 - side * 0.28) + fx * s * 0.04;
-      ell(x, px, chestY - s * 0.10, s * 0.17, s * 0.135, P.armor, sgn * 0.34, 1.75, 0.44);
-      for (let k = -1; k <= 1; k++) poly(x, [[0, 0], [sgn * s * 0.06, -s * 0.09], [sgn * s * 0.02, s * 0.005]], P.horn, 0, px + k * s * 0.06, chestY - s * 0.17);
-    }
-  }
-
-  /* ---- arms ---- */
-  const armY = chestY - s * 0.06;
-  for (const sgn of [-1, 1]) {
-    const isWeapon = sgn === (fx >= 0 ? 1 : -1);
-    const sw = -swing * sgn;
-    const shX = sgn * shoulderW * (1 - side * 0.30) + fx * s * 0.04;
-    const elX = shX + sw * s * 0.08 + fx * s * 0.10;
-    const hX = shX + sw * s * 0.17 + fx * s * 0.20;
-    const hY = armY + s * 0.30 + (isWeapon ? -s * 0.07 : 0);
-    capsule(x, shX, armY, elX, armY + s * 0.16, s * 0.10, s * 0.085, P.limb);
-    capsule(x, elX, armY + s * 0.15, hX, hY, s * 0.085, s * 0.07, P.limb);
-    ell(x, hX, hY, s * 0.075, s * 0.07, shade(P.limb, 1.12));
-    if (isWeapon && def.weapon) drawWeapon(x, def, hX, hY, fx, fy, s, ph);
-    if (!isWeapon && def.shield && !back) {
-      ell(x, hX, hY - s * 0.05, s * 0.19, s * 0.23, P.armor, 0, 1.65, 0.46);
-      ell(x, hX, hY - s * 0.05, s * 0.07, s * 0.08, P.accent, 0, 1.7, 0.7);
-    }
-  }
-
-  /* ---- neck + head ---- */
-  capsule(x, headX * 0.4, chestY - s * 0.16, headX, headY + hr * 0.5, s * 0.085, s * 0.075, shade(P.limb, 0.94));
-  if (def.ears) for (const sgn of [-1, 1])
-    poly(x, [[0, 0], [sgn * hr * 0.95, -hr * 0.55], [sgn * hr * 0.5, hr * 0.30]], shade(P.limb, 1.05), 0, headX + sgn * hr * 0.72, headY - hr * 0.12);
-  if (def.hair || back) ell(x, headX - fx * hr * 0.16, headY - hr * 0.16, hr * 1.14, hr * 0.92, shade(P.limb, 0.58), 0, 1.3, 0.5);
-  ell(x, headX, headY, hr, hr * 0.94, P.body, 0, 1.68, 0.48);
-  if (def.snout && !back) {
-    ell(x, headX + fx * hr * 0.62, headY + hr * 0.34, hr * 0.46, hr * 0.32, shade(P.body, 1.16), 0, 1.5, 0.6);
-    x.fillStyle = 'rgba(20,14,18,0.7)';
-    x.beginPath(); x.ellipse(headX + fx * hr * 0.78, headY + hr * 0.26, hr * 0.09, hr * 0.07, 0, 0, TAU); x.fill();
-  }
-  if (def.horns) for (const sgn of [-1, 1]) {
-    const bx = headX + sgn * hr * 0.80, by = headY - hr * 0.42;
-    poly(x, [[0, 0], [sgn * hr * 0.34, -hr * 0.62], [sgn * hr * 0.62, -hr * 0.96], [sgn * hr * 0.30, -hr * 0.42], [sgn * hr * 0.16, hr * 0.06]], P.horn, 0, bx, by);
-  }
-  if (def.helmet) {
-    x.save();
-    x.beginPath(); x.ellipse(headX, headY - hr * 0.10, hr * 1.10, hr * 0.86, 0, Math.PI, TAU); x.closePath();
-    const g = x.createLinearGradient(headX - hr, headY - hr, headX + hr * 0.6, headY);
-    g.addColorStop(0, rgb(...shade(P.armor, 1.95))); g.addColorStop(0.5, rgb(...P.armor)); g.addColorStop(1, rgb(...shade(P.armor, 0.5)));
-    x.fillStyle = g; x.fill(); x.restore();
-    poly(x, [[-hr * 0.10, 0], [hr * 0.10, 0], [hr * 0.05, -hr * 0.74], [-hr * 0.05, -hr * 0.74]], P.accent, 0, headX, headY - hr * 0.86);
-  }
-
-  if (!back) {
-    const eyY = headY + hr * 0.05, eySp = hr * 0.40 * (1 - side * 0.46);
-    for (const sgn of [-1, 1]) {
-      const ex = headX + fx * hr * 0.24 + sgn * eySp;
-      if (side > 0.85 && sgn === -(fx >= 0 ? 1 : -1)) continue;   // far eye hidden in profile
-      x.fillStyle = 'rgba(248,244,232,0.95)';
-      x.beginPath(); x.ellipse(ex, eyY, hr * 0.24, hr * 0.19, 0, 0, TAU); x.fill();
-      x.fillStyle = def.eye || '#ffd76b';
-      x.beginPath(); x.ellipse(ex + fx * hr * 0.05, eyY, hr * 0.16, hr * 0.145, 0, 0, TAU); x.fill();
-      x.fillStyle = 'rgba(12,8,14,0.92)';
-      x.beginPath(); x.ellipse(ex + fx * hr * 0.07, eyY, hr * 0.075, hr * 0.10, 0, 0, TAU); x.fill();
-      x.fillStyle = 'rgba(255,255,255,0.85)';
-      x.beginPath(); x.arc(ex - hr * 0.05, eyY - hr * 0.06, hr * 0.045, 0, TAU); x.fill();
-      // brow
-      x.strokeStyle = `rgba(${shade(P.body, 0.4).map(v => v | 0)},0.85)`; x.lineWidth = hr * 0.13; x.lineCap = 'round';
-      x.beginPath(); x.moveTo(ex - hr * 0.22, eyY - hr * 0.26); x.lineTo(ex + hr * 0.20, eyY - hr * 0.34 + sgn * hr * 0.06); x.stroke();
-    }
-    if (def.fangs) {
-      x.fillStyle = '#f6f0dc';
-      for (const sgn of [-1, 1]) {
-        const mx = headX + fx * hr * 0.28 + sgn * hr * 0.22;
-        x.beginPath(); x.moveTo(mx - hr * 0.06, headY + hr * 0.42); x.lineTo(mx + hr * 0.06, headY + hr * 0.42);
-        x.lineTo(mx, headY + hr * 0.70); x.closePath(); x.fill();
-      }
-    }
-  }
-  if (def.kind === 'flyer') drawWings(x, def, ph, chestY - s * 0.1, fx, fy, false);
+/* Flat fill -- no sculpting gradient. poly()/ell() light each shape from its
+   own centre, which is right for a mass and wrong for a trim line or a slit:
+   a 2px band lit that way turns into a grey smear. */
+function flat(x, pts, col, a) {
+  x.save(); if (a !== undefined) x.globalAlpha = a;
+  x.beginPath(); pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1]));
+  x.closePath(); x.fillStyle = typeof col === 'string' ? col : rgb(col[0], col[1], col[2]); x.fill(); x.restore();
+}
+function strokePath(x, pts, col, w, a) {
+  x.save(); if (a !== undefined) x.globalAlpha = a;
+  x.strokeStyle = typeof col === 'string' ? col : rgb(col[0], col[1], col[2]);
+  x.lineWidth = w; x.lineCap = 'round'; x.lineJoin = 'round';
+  x.beginPath(); pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.stroke(); x.restore();
+}
+/* A bright eye. Deliberately no radial halo: the outline pass silhouettes
+   every non-transparent pixel, so a soft glow would come back as a dark ring
+   around the head. Brightness has to come from the colour itself. */
+function eyeDot(x, cx, cy, r, col) {
+  x.save(); x.fillStyle = col;
+  x.beginPath(); x.ellipse(cx, cy, r, r * 0.78, 0, 0, TAU); x.fill();
+  x.fillStyle = 'rgba(255,255,255,0.9)';
+  x.beginPath(); x.arc(cx - r * 0.3, cy - r * 0.3, r * 0.32, 0, TAU); x.fill();
   x.restore();
 }
-function drawWings(x, def, ph, y, fx, fy, behind) {
-  const s = def.s, flap = Math.sin(ph) * 0.5 + Math.sin(ph * 2 + 0.4) * 0.16; // fast downstroke, slower recovery
-  const P = def.pal, side = Math.abs(fx);
-  for (const sgn of [-1, 1]) {
-    x.save();
-    x.translate(sgn * s * 0.20, y + s * 0.12);
-    x.rotate(sgn * (0.34 + flap) * (behind ? 1.1 : 0.75));
-    x.scale(sgn * (1 - side * 0.28), 1);
-    x.globalAlpha = behind ? 0.72 : 1;
-    const span = s * (behind ? 1.05 : 1.34);
-    if (def.wingType === 'feather') {
-      for (let i = 0; i < 7; i++) {
-        const t = i / 6;
-        poly(x, [[0, 0], [span * (0.46 + t * 0.62), -s * 0.10 - t * s * 0.06],
-                 [span * (0.40 + t * 0.58), s * 0.05], [0, s * 0.10]],
-          shade(P.wing, 1.22 - i * 0.10), 0, s * 0.02, -s * 0.10 + i * s * 0.062);
-      }
-      x.strokeStyle = `rgba(${shade(P.wing, 0.42).map(v => v | 0)},0.85)`; x.lineWidth = 1.4;
-      x.beginPath(); x.moveTo(0, -s * 0.06); x.quadraticCurveTo(span * 0.5, -s * 0.16, span * 0.92, s * 0.02); x.stroke();
-    } else {
-      poly(x, [[0, -s * 0.06], [span * 0.42, -s * 0.52], [span * 0.98, -s * 0.30],
-               [span * 0.86, s * 0.02], [span * 0.60, -s * 0.04], [span * 0.52, s * 0.16],
-               [span * 0.28, -s * 0.02], [span * 0.22, s * 0.22], [0, s * 0.12]], P.wing);
-      x.strokeStyle = `rgba(${shade(P.wing, 0.35).map(v => v | 0)},0.9)`; x.lineWidth = 1.8; x.lineCap = 'round';
-      for (let i = 0; i < 4; i++) {
-        x.beginPath(); x.moveTo(span * 0.05, -s * 0.02);
-        x.lineTo(span * (0.30 + i * 0.22), -s * 0.36 + i * s * 0.15); x.stroke();
-      }
-      x.strokeStyle = `rgba(${shade(P.wing, 1.55).map(v => v | 0)},0.55)`; x.lineWidth = 1.1;
-      x.beginPath(); x.moveTo(0, -s * 0.05); x.quadraticCurveTo(span * 0.45, -s * 0.50, span * 0.96, -s * 0.29); x.stroke();
-    }
-    x.restore();
+function crCtx(def, d, f) {
+  const [fx, fy] = dirVec(d);
+  const ph = f / FRAMES * TAU;
+  return {
+    s: def.s, fx, fy, ph, back: fy < -0.35, front: fy > 0.35, side: Math.abs(fx),
+    swing: Math.sin(ph), bob: Math.cos(ph * 2),
+    ws: fx > 0.15 ? 1 : fx < -0.15 ? -1 : 1,     // lead-hand side; right when facing the camera
+    G: def.s * 0.52
+  };
+}
+/* Walking legs. The far leg is drawn first and darker, so a profile view
+   keeps its depth instead of reading as two legs pasted side by side. */
+function crLegs(x, c, o) {
+  const { s, fx, swing, side } = c;
+  const order = fx >= 0 ? [-1, 1] : [1, -1];
+  for (const sgn of order) {
+    const near = sgn * (fx || 0.001) >= 0, dim = near ? 1 : 0.72;
+    const sw = swing * sgn;
+    const hipX = sgn * o.hipW * (1 - side * 0.45) + fx * s * 0.02;
+    const step = sw * s * (o.stride || 0.15) * (0.35 + side * 0.65);
+    const lift = Math.max(0, sw) * s * 0.05;
+    const kneeX = hipX + step * 0.5 + fx * s * (o.kneeFwd || 0.04), kneeY = o.hipY + o.len * 0.52 - lift * 0.4;
+    const footX = hipX + step + fx * s * 0.04, footY = c.G - lift;
+    capsule(x, hipX, o.hipY, kneeX, kneeY, o.thick, o.thick * 0.84, shade(o.col, dim));
+    capsule(x, kneeX, kneeY, footX, footY - o.thick * 0.4, o.thick * 0.84, o.thick * 0.66, shade(o.col, dim * 0.9));
+    const fc = shade(o.foot || o.col, dim * 0.8), fw = o.thick * 1.25;
+    flat(x, [[footX - fw, footY], [footX + fw + fx * fw * 0.6, footY], [footX + fw * 0.5 + fx * fw * 0.5, footY - o.thick * 0.9], [footX - fw * 0.6, footY - o.thick * 0.9]], fc);
+    if (o.claws) for (let k = -1; k <= 1; k++) flat(x, [[footX + k * fw * 0.55 + fx * fw * 0.7, footY - 1], [footX + k * fw * 0.55 + fx * fw * 1.05, footY + 1.2], [footX + k * fw * 0.55 + fx * fw * 0.5, footY + 0.8]], o.claws);
   }
 }
-function drawWeapon(x, def, hx, hy, fx, fy, s, ph) {
-  const w = def.weapon, P = def.pal;
-  s = s * 1.32;
-  const ang = Math.atan2(fy * 0.6, fx) - 0.5 + Math.sin(ph) * 0.12;
+/* Weapons, drawn from the grip outward along `ang` (radians, 0 = +x). */
+function crSpear(x, hx, hy, ang, len, s, wood, tip) {
   x.save(); x.translate(hx, hy); x.rotate(ang);
-  if (w === 'spear') {
-    capsule(x, -s * 0.32, 0, s * 0.5, -s * 0.06, s * 0.028, s * 0.022, [110, 76, 44]);
-    poly(x, [[0, 0], [s * 0.16, -s * 0.05], [0, -s * 0.10]], [206, 210, 220], 0, s * 0.5, -s * 0.06);
-  } else if (w === 'axe') {
-    capsule(x, -s * 0.22, 0, s * 0.36, -s * 0.04, s * 0.035, s * 0.03, [92, 64, 40]);
-    poly(x, [[0, -s * 0.19], [s * 0.20, -s * 0.12], [s * 0.20, s * 0.12], [0, s * 0.19], [-s * 0.04, 0]], [190, 196, 208], 0, s * 0.32, -s * 0.04);
-    poly(x, [[0, -s * 0.13], [s * 0.12, -s * 0.08], [s * 0.12, s * 0.08], [0, s * 0.13]], [140, 148, 162], 0, s * 0.32, -s * 0.04);
-  } else if (w === 'club') {
-    capsule(x, -s * 0.2, 0, s * 0.34, 0, s * 0.045, s * 0.10, [96, 68, 42]);
-    for (let i = 0; i < 5; i++) { const a = i / 5 * TAU; ell(x, s * 0.36 + Math.cos(a) * s * 0.08, Math.sin(a) * s * 0.09, s * 0.035, s * 0.03, [206, 200, 186]); }
-  } else if (w === 'claw') {
-    for (let i = -1; i <= 1; i++) poly(x, [[0, i * s * 0.05], [s * 0.22, i * s * 0.10 - s * 0.02], [s * 0.05, i * s * 0.05 + s * 0.03]], [232, 226, 208], 0, s * 0.06, 0);
-  } else if (w === 'scythe') {
-    capsule(x, -s * 0.3, 0, s * 0.42, -s * 0.1, s * 0.026, s * 0.02, [58, 50, 62]);
-    x.save(); x.translate(s * 0.42, -s * 0.1);
-    x.beginPath(); x.moveTo(0, 0); x.quadraticCurveTo(s * 0.3, -s * 0.1, s * 0.24, s * 0.24);
-    x.quadraticCurveTo(s * 0.2, -s * 0.02, 0, s * 0.06); x.closePath();
-    const g = x.createLinearGradient(0, -s * 0.1, s * 0.3, s * 0.2);
-    g.addColorStop(0, '#cfe9f2'); g.addColorStop(1, '#5c7f8c'); x.fillStyle = g; x.fill(); x.restore();
-  } else if (w === 'blade') {
-    capsule(x, -s * 0.1, 0, s * 0.1, 0, s * 0.03, s * 0.03, [80, 60, 40]);
-    poly(x, [[0, -s * 0.055], [s * 0.44, -s * 0.02], [s * 0.5, 0], [s * 0.44, s * 0.02], [0, s * 0.055]], [214, 220, 232], 0, s * 0.1, 0);
+  capsule(x, -len * 0.35, 0, len * 0.65, 0, s * 0.03, s * 0.026, wood);
+  poly(x, [[len * 0.62, -s * 0.06], [len * 0.62 + s * 0.2, 0], [len * 0.62, s * 0.06], [len * 0.58, 0]], tip);
+  x.restore();
+}
+function crClub(x, hx, hy, ang, len, thick, wood, studs) {
+  x.save(); x.translate(hx, hy); x.rotate(ang);
+  poly(x, [[-thick * 0.35, -thick * 0.3], [len * 0.55, -thick * 0.62], [len, -thick * 0.9], [len, thick * 0.9], [len * 0.55, thick * 0.62], [-thick * 0.35, thick * 0.3]], wood);
+  ell(x, len, 0, thick * 0.5, thick * 0.95, shade(wood, 1.1));
+  for (const k of [0.3, 0.5, 0.7]) strokePath(x, [[len * k, -thick * 0.45 * (0.6 + k * 0.5)], [len * (k + 0.14), -thick * 0.15]], shade(wood, 0.55), thick * 0.12);
+  if (studs) for (const [k, o] of [[0.8, -0.8], [0.93, 0.55], [0.66, 0.5]]) poly(x, [[len * k - thick * 0.16, o * thick], [len * k, o * thick + Math.sign(o) * thick * 0.5], [len * k + thick * 0.16, o * thick]], studs);
+  x.restore();
+}
+function crSabre(x, hx, hy, ang, len, s, steel, grip) {
+  x.save(); x.translate(hx, hy); x.rotate(ang);
+  capsule(x, -s * 0.06, 0, s * 0.05, 0, s * 0.028, s * 0.028, grip);
+  flat(x, [[s * 0.05, -s * 0.07], [s * 0.08, -s * 0.07], [s * 0.08, s * 0.07], [s * 0.05, s * 0.07]], [200, 160, 70]);
+  x.beginPath(); x.moveTo(s * 0.08, -s * 0.03);
+  x.quadraticCurveTo(len * 0.6, -s * 0.06, len, -s * 0.16);
+  x.quadraticCurveTo(len * 0.62, s * 0.05, s * 0.08, s * 0.03); x.closePath();
+  const g = x.createLinearGradient(0, -s * 0.1, 0, s * 0.05);
+  g.addColorStop(0, rgb(...shade(steel, 1.35))); g.addColorStop(1, rgb(...shade(steel, 0.7)));
+  x.fillStyle = g; x.fill(); x.restore();
+}
+
+/* ---- Kobold: small, hunched, big bat ears, long snout, tail, spear ---- */
+function pKobold(x, c) {
+  const { s, fx, back, ph, swing, ws } = c, P = CPAL.kobold, G = c.G;
+  const hipY = G - s * 0.34, chestY = hipY - s * 0.24, lean = fx * s * 0.08;
+  const headX = fx * s * 0.14 + lean, headY = chestY - s * 0.2;
+  // tail, trailing away from the facing
+  const tx = -(fx || 0.25);
+  capsule(x, 0, hipY - s * 0.02, tx * s * 0.3, hipY + s * 0.06, s * 0.06, s * 0.04, P.dark);
+  capsule(x, tx * s * 0.3, hipY + s * 0.06, tx * s * 0.46, hipY - s * 0.04 + Math.sin(ph) * s * 0.04, s * 0.04, s * 0.02, P.dark);
+  if (back) crSpear(x, ws * s * 0.1, chestY + s * 0.08, -ws * 0.9 + (ws < 0 ? Math.PI : 0), s * 0.85, s, P.wood, P.bone);
+  crLegs(x, c, { hipY, hipW: s * 0.09, len: s * 0.34, thick: s * 0.07, col: P.hide, foot: P.dark, stride: 0.14, claws: P.bone });
+  // torso: a pear leaning into the stride
+  poly(x, [[lean - s * 0.12, chestY - s * 0.02], [lean + s * 0.12, chestY - s * 0.02], [s * 0.17, hipY - s * 0.08], [s * 0.12, hipY + s * 0.02], [-s * 0.12, hipY + s * 0.02], [-s * 0.17, hipY - s * 0.08]], P.hide);
+  if (!back) ell(x, lean * 0.5 + fx * s * 0.03, hipY - s * 0.12, s * 0.09, s * 0.1, P.belly);
+  flat(x, [[-s * 0.14, hipY - s * 0.03], [s * 0.14, hipY - s * 0.03], [s * 0.1, hipY + s * 0.1], [s * 0.02, hipY + s * 0.05], [-s * 0.06, hipY + s * 0.11], [-s * 0.13, hipY + s * 0.04]], P.leather);
+  // arms and the spear held across the body
+  const h1x = -ws * s * 0.06 + lean, h1y = hipY - s * 0.1, h2x = ws * s * 0.16 + lean, h2y = chestY + s * 0.04;
+  capsule(x, -ws * s * 0.1 + lean, chestY + s * 0.02, h1x, h1y, s * 0.045, s * 0.04, shade(P.hide, 0.85));
+  if (!back) crSpear(x, h2x, h2y, ws > 0 ? -0.72 : Math.PI + 0.72, s * 0.9, s, P.wood, P.bone);
+  capsule(x, ws * s * 0.1 + lean, chestY + s * 0.02, h2x, h2y, s * 0.045, s * 0.04, P.hide);
+  // head: skull, snout toward the facing, and the ears -- the silhouette
+  for (const sgn of [-1, 1]) {
+    const far = sgn * fx < -0.3, k = far ? 0.7 : 1;
+    poly(x, [[headX + sgn * s * 0.08, headY - s * 0.06], [headX + sgn * s * 0.34 * k, headY - s * 0.2 * k], [headX + sgn * s * 0.12, headY + s * 0.04]], far ? shade(P.hide, 0.7) : P.hide);
+    if (!back && !far) flat(x, [[headX + sgn * s * 0.1, headY - s * 0.04], [headX + sgn * s * 0.27 * k, headY - s * 0.15 * k], [headX + sgn * s * 0.12, headY + s * 0.01]], [196, 120, 96], 0.8);
   }
+  ell(x, headX, headY, s * 0.15, s * 0.135, P.hide);
+  if (!back) {
+    const snX = headX + fx * s * 0.14, snY = headY + s * 0.06 + c.fy * s * 0.02;
+    ell(x, snX, snY, s * (0.08 + c.side * 0.03), s * 0.06, P.belly);
+    ell(x, snX + fx * s * 0.05, snY - s * 0.02, s * 0.022, s * 0.016, P.dark);
+    flat(x, [[snX - s * 0.05, snY + s * 0.035], [snX + s * 0.05, snY + s * 0.035], [snX, snY + s * 0.06]], P.bone);
+    for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.05 * (1 - c.side * 0.5) + fx * s * 0.05, headY - s * 0.02, s * 0.028, P.eye);
+  }
+}
+
+/* ---- Gulyabani: gaunt, bent double, arms hanging past the knees ---- */
+function pGhoul(x, c) {
+  const { s, fx, back, ph, swing } = c, P = CPAL.ghoul, G = c.G;
+  const hipY = G - s * 0.38, lean = fx * s * 0.14;
+  const shY = hipY - s * 0.3, headX = fx * s * 0.2 + lean, headY = shY + s * 0.02;
+  crLegs(x, c, { hipY, hipW: s * 0.08, len: s * 0.38, thick: s * 0.055, col: P.skin, foot: P.dark, stride: 0.2, kneeFwd: 0.1, claws: P.claw });
+  const arm = (sgn, dim) => {
+    const sx = sgn * s * 0.19 + lean, sy = shY - s * 0.02;
+    const ex = sx + sgn * s * 0.09 + fx * s * 0.06 - swing * sgn * s * 0.05, ey = sy + s * 0.22;
+    const hx = ex + sgn * s * 0.01 + fx * s * 0.1 - swing * sgn * s * 0.08, hy = G - s * 0.1;
+    capsule(x, sx, sy, ex, ey, s * 0.05, s * 0.04, shade(P.skin, dim));
+    capsule(x, ex, ey, hx, hy, s * 0.04, s * 0.035, shade(P.skin, dim * 0.92));
+    ell(x, hx, hy, s * 0.05, s * 0.045, shade(P.skin, dim * 0.85));
+    for (let k = -1; k <= 1; k++) capsule(x, hx, hy, hx + k * s * 0.045 + fx * s * 0.05, hy + s * 0.12, s * 0.018, s * 0.006, P.claw);
+  };
+  arm(fx >= 0 ? -1 : 1, 0.7);
+  // torso: bony shoulders tapering to a starved waist
+  poly(x, [[lean - s * 0.2, shY - s * 0.05], [lean + s * 0.2, shY - s * 0.05], [lean + s * 0.14, shY + s * 0.08], [s * 0.08, hipY], [-s * 0.08, hipY], [lean - s * 0.14, shY + s * 0.08]], P.skin);
+  if (!back) for (let i = 0; i < 3; i++) {
+    const yy = shY + s * (0.06 + i * 0.06), w = s * (0.11 - i * 0.02);
+    strokePath(x, [[lean * 0.7 - w, yy], [lean * 0.7, yy + s * 0.02], [lean * 0.7 + w, yy]], P.dark, s * 0.022, 0.85);
+  } else strokePath(x, [[lean * 0.5, shY], [0, hipY - s * 0.02]], P.dark, s * 0.03, 0.7);
+  flat(x, [[-s * 0.1, hipY - s * 0.03], [s * 0.1, hipY - s * 0.03], [s * 0.11, hipY + s * 0.14], [s * 0.03, hipY + s * 0.07], [-s * 0.04, hipY + s * 0.16], [-s * 0.11, hipY + s * 0.08]], P.rag);
+  arm(fx >= 0 ? 1 : -1, 1);
+  // head: thrust forward and DOWN, below the shoulder line -- the hunch
+  for (let i = 0; i < 5; i++) {
+    const hxh = headX + (i - 2) * s * 0.04 - fx * s * 0.04, sw2 = Math.sin(ph + i) * s * 0.02;
+    strokePath(x, [[hxh, headY - s * 0.09], [hxh - fx * s * 0.07 + sw2, headY + s * 0.06], [hxh - fx * s * 0.09 + sw2, headY + s * 0.15]], P.hair, s * 0.02);
+  }
+  ell(x, headX, headY, s * 0.12, s * 0.12, P.skin);
+  if (!back) {
+    flat(x, [[headX - s * 0.07 + fx * s * 0.03, headY + s * 0.04], [headX + s * 0.07 + fx * s * 0.03, headY + s * 0.04], [headX + fx * s * 0.04, headY + s * 0.15]], P.mouth);
+    for (const k of [-1, 0, 1]) flat(x, [[headX + k * s * 0.035 + fx * s * 0.03 - s * 0.012, headY + s * 0.045], [headX + k * s * 0.035 + fx * s * 0.03 + s * 0.012, headY + s * 0.045], [headX + k * s * 0.035 + fx * s * 0.03, headY + s * 0.085]], P.claw);
+    flat(x, [[headX - s * 0.1, headY - s * 0.05], [headX + s * 0.1, headY - s * 0.05], [headX + s * 0.06, headY - s * 0.01], [headX - s * 0.06, headY - s * 0.01]], P.dark, 0.8);
+    for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.05 * (1 - c.side * 0.5) + fx * s * 0.04, headY - s * 0.01, s * 0.03, P.eye);
+  }
+}
+
+/* ---- Orduğ Savaşçısı: pointed steppe helm, lamellar coat, round shield ---- */
+function pGrunt(x, c) {
+  const { s, fx, back, ph, swing, ws } = c, P = CPAL.grunt, G = c.G;
+  const hipY = G - s * 0.32, chestY = hipY - s * 0.26, headX = fx * s * 0.05, headY = chestY - s * 0.2;
+  const shield = (front) => {
+    const bx = -ws * s * 0.24 + fx * s * 0.04, by = chestY + s * 0.1;
+    ell(x, bx, by, s * (0.19 - c.side * 0.07), s * 0.2, P.iron);
+    ell(x, bx, by, s * (0.15 - c.side * 0.055), s * 0.16, front ? P.wood : shade(P.wood, 0.6));
+    if (front) { ell(x, bx, by, s * 0.05, s * 0.05, P.gold); strokePath(x, [[bx, by - s * 0.15], [bx, by + s * 0.15]], P.iron, s * 0.025); }
+  };
+  if (back) shield(false);
+  crLegs(x, c, { hipY, hipW: s * 0.1, len: s * 0.32, thick: s * 0.07, col: P.leather, foot: [44, 32, 24], stride: 0.12 });
+  // lamellar skirt, split front and back
+  for (const sgn of [-1, 1]) poly(x, [[sgn * s * 0.02, hipY - s * 0.04], [sgn * s * 0.17, hipY - s * 0.04], [sgn * s * 0.2 + swing * sgn * s * 0.02, hipY + s * 0.16], [sgn * s * 0.03, hipY + s * 0.14]], P.iron);
+  // coat
+  poly(x, [[-s * 0.2, chestY - s * 0.04], [s * 0.2, chestY - s * 0.04], [s * 0.18, hipY], [-s * 0.18, hipY]], P.iron);
+  for (let i = 1; i <= 4; i++) {
+    const yy = chestY - s * 0.04 + i * (hipY - chestY + s * 0.04) / 5;
+    strokePath(x, [[-s * 0.18, yy], [s * 0.18, yy]], shade(P.iron, 0.55), s * 0.018);
+  }
+  flat(x, [[-s * 0.19, hipY - s * 0.06], [s * 0.19, hipY - s * 0.06], [s * 0.19, hipY - s * 0.01], [-s * 0.19, hipY - s * 0.01]], P.cloth);
+  // pauldrons
+  for (const sgn of [-1, 1]) ell(x, sgn * s * 0.2, chestY, s * 0.08, s * 0.06, P.ironLite);
+  // sword arm, the sabre raised with the stride
+  const hx = ws * s * 0.24 + fx * s * 0.04, hy = chestY + s * 0.12 - swing * s * 0.03;
+  capsule(x, ws * s * 0.19, chestY + s * 0.02, hx, hy, s * 0.055, s * 0.05, P.skin);
+  if (!back) crSabre(x, hx, hy, ws > 0 ? -1.1 - swing * 0.15 : Math.PI + 1.1 + swing * 0.15, s * 0.5, s, [170, 180, 196], P.leather);
+  else crSabre(x, hx, hy, ws > 0 ? -1.9 : Math.PI + 1.9, s * 0.5, s, [170, 180, 196], P.leather);
+  if (!back) shield(true);
+  // head: aventail, face with tusks, conical helm with nasal
+  poly(x, [[headX - s * 0.13, headY - s * 0.02], [headX + s * 0.13, headY - s * 0.02], [headX + s * 0.15, headY + s * 0.12], [headX - s * 0.15, headY + s * 0.12]], shade(P.iron, 0.8));
+  ell(x, headX, headY + s * 0.02, s * 0.1, s * 0.1, back ? shade(P.iron, 0.8) : P.skin);
+  if (!back) {
+    for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.04 * (1 - c.side * 0.5) + fx * s * 0.04, headY + s * 0.01, s * 0.022, P.eye);
+    for (const sgn of [-1, 1]) flat(x, [[headX + sgn * s * 0.05 + fx * s * 0.03, headY + s * 0.09], [headX + sgn * s * 0.06 + fx * s * 0.03, headY + s * 0.04], [headX + sgn * s * 0.035 + fx * s * 0.03, headY + s * 0.08]], [232, 222, 196]);
+  }
+  poly(x, [[headX - s * 0.14, headY - s * 0.03], [headX + s * 0.14, headY - s * 0.03], [headX + s * 0.02, headY - s * 0.3], [headX - s * 0.01, headY - s * 0.3]], P.iron);
+  flat(x, [[headX - s * 0.14, headY - s * 0.05], [headX + s * 0.14, headY - s * 0.05], [headX + s * 0.14, headY - s * 0.02], [headX - s * 0.14, headY - s * 0.02]], P.gold);
+  ell(x, headX + s * 0.005, headY - s * 0.31, s * 0.025, s * 0.025, P.gold);
+  if (!back) flat(x, [[headX + fx * s * 0.06 - s * 0.012, headY - s * 0.04], [headX + fx * s * 0.06 + s * 0.012, headY - s * 0.04], [headX + fx * s * 0.06 + s * 0.008, headY + s * 0.05], [headX + fx * s * 0.06 - s * 0.008, headY + s * 0.05]], P.ironLite);
+}
+
+/* Feathered or membrane wings, one per side, flapping with the cycle. `lift`
+   is how far up the stroke goes; `behind` draws the pair before the body. */
+function crWing(x, c, o) {
+  const { s, fx, ph } = c;
+  const flap = Math.sin(ph) * (o.flap || 0.55);
+  for (const sgn of [-1, 1]) {
+    const far = sgn * fx < -0.3, dim = far ? 0.7 : 1, span = o.span * (far ? 0.72 : 1) * (1 - c.side * 0.25);
+    const rx = sgn * o.rootX, ry = o.rootY;
+    // radians above horizontal. Feathered wings sweep wider and lower than
+    // bat wings: held as high as a bat's, a harpy read as raising its arms.
+    const tipA = o.type === 'feather' ? -0.3 - flap * 0.7 : -0.55 - flap;
+    const tx = rx + sgn * span * Math.cos(tipA), ty = ry + span * Math.sin(tipA);
+    if (o.type === 'feather') {
+      // a leading edge out to the tip, then a scalloped trailing edge back
+      const mid = tipA + 0.25;
+      const pts = [[rx, ry - s * 0.05], [rx + sgn * span * 0.45 * Math.cos(mid), ry + span * 0.45 * Math.sin(mid) - s * 0.03], [tx, ty]];
+      const n = 5;
+      for (let i = 1; i <= n; i++) {
+        const t = i / n;
+        // the trailing edge sags well below the line from tip to body -- an
+        // open wing is broad, and drawn as a straight sliver it read as a
+        // raised arm, not a wing
+        const bx = tx + (rx + sgn * s * 0.04 - tx) * t, by = ty + (ry + s * 0.14 - ty) * t + Math.sin(t * Math.PI) * s * 0.3;
+        pts.push([bx + sgn * s * 0.02, by + s * 0.07]);
+        if (i < n) pts.push([bx - sgn * s * 0.03, by + s * 0.01]);
+      }
+      poly(x, pts, shade(o.col, dim));
+      flat(x, [[rx, ry - s * 0.05], pts[1], [tx, ty], [lerp(rx, tx, 0.55), lerp(ry, ty, 0.55) + s * 0.1], [rx, ry + s * 0.06]], shade(o.lite, dim), 0.5);
+      for (let i = 1; i < n; i++) strokePath(x, [[lerp(rx, tx, 0.35), lerp(ry, ty, 0.35) + s * 0.06], pts[1 + i * 2]], shade(o.dark, dim), s * 0.016, 0.7);
+    } else {
+      // bat: finger bones with a membrane between them
+      const fingers = [];
+      for (let i = 0; i < 4; i++) {
+        const a = tipA + i * 0.42, l = span * (1 - i * 0.16);
+        fingers.push([rx + sgn * l * Math.cos(a), ry + l * Math.sin(a)]);
+      }
+      const pts = [[rx, ry]];
+      fingers.forEach((p, i) => { pts.push(p); if (i < 3) { const q = fingers[i + 1]; pts.push([(p[0] + q[0]) / 2 - sgn * s * 0.02, (p[1] + q[1]) / 2 + s * 0.07]); } });
+      pts.push([rx - sgn * s * 0.02, ry + s * 0.16]);
+      poly(x, pts, shade(o.col, dim));
+      for (const p of fingers) capsule(x, rx, ry, p[0], p[1], s * 0.03, s * 0.012, shade(o.dark, dim));
+    }
+  }
+}
+
+/* ---- Alkarısı: a witch-bird -- human face, wild hair, feathered wings ---- */
+function pHarpy(x, c) {
+  const { s, fx, back, ph } = c, P = CPAL.harpy;
+  const bodyY = -s * 0.02, headY = bodyY - s * 0.28, headX = fx * s * 0.06;
+  if (!back) crWing(x, c, { type: 'feather', rootX: s * 0.1, rootY: bodyY - s * 0.12, span: s * 0.8, col: P.feather, lite: P.lite, dark: P.dark });
+  // tail fan and taloned legs
+  for (let i = -2; i <= 2; i++) capsule(x, 0, bodyY + s * 0.14, i * s * 0.07 - fx * s * 0.05, bodyY + s * 0.42, s * 0.05, s * 0.03, i % 2 ? P.feather : P.dark);
+  for (const sgn of [-1, 1]) {
+    const lx = sgn * s * 0.07, ly = bodyY + s * 0.18;
+    capsule(x, lx, ly, lx + sgn * s * 0.02, ly + s * 0.2, s * 0.028, s * 0.02, P.talon);
+    for (let k = -1; k <= 1; k++) capsule(x, lx + sgn * s * 0.02, ly + s * 0.2, lx + sgn * s * 0.02 + k * s * 0.05, ly + s * 0.26, s * 0.014, s * 0.006, P.talon);
+  }
+  // body: feathered teardrop
+  poly(x, [[-s * 0.13, bodyY - s * 0.14], [s * 0.13, bodyY - s * 0.14], [s * 0.11, bodyY + s * 0.12], [0, bodyY + s * 0.22], [-s * 0.11, bodyY + s * 0.12]], P.feather);
+  if (!back) for (let i = 0; i < 3; i++) flat(x, [[-s * 0.08 + i * s * 0.08 - s * 0.03, bodyY - s * 0.02 + (i % 2) * s * 0.06], [-s * 0.08 + i * s * 0.08 + s * 0.03, bodyY - s * 0.02 + (i % 2) * s * 0.06], [-s * 0.08 + i * s * 0.08, bodyY + s * 0.06 + (i % 2) * s * 0.06]], P.lite, 0.7);
+  if (back) crWing(x, c, { type: 'feather', rootX: s * 0.1, rootY: bodyY - s * 0.12, span: s * 0.8, col: P.feather, lite: P.lite, dark: P.dark });
+  // hair mass streaming behind, then the face
+  for (let i = 0; i < 6; i++) {
+    const t = i / 5, sw = Math.sin(ph + i) * s * 0.03;
+    ell(x, headX - (fx || 0.2) * s * (0.06 + t * 0.14) + sw, headY + s * (-0.04 + t * 0.12), s * (0.11 - t * 0.03), s * (0.1 - t * 0.02), P.hair);
+  }
+  ell(x, headX, headY, s * 0.12, s * 0.13, back ? P.hair : P.skin);
+  if (!back) {
+    flat(x, [[headX + fx * s * 0.06, headY], [headX + fx * s * 0.16 + (fx ? 0 : s * 0.02), headY + s * 0.05], [headX + fx * s * 0.07, headY + s * 0.06]], [150, 110, 60]);
+    for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.04 * (1 - c.side * 0.5) + fx * s * 0.03, headY - s * 0.01, s * 0.025, P.eye);
+    flat(x, [[headX - s * 0.1, headY - s * 0.05], [headX + s * 0.1, headY - s * 0.05], [headX + s * 0.08, headY - s * 0.11], [headX - s * 0.08, headY - s * 0.11]], P.hair);
+  }
+}
+
+/* ---- Taş Yalman: a stone gargoyle -- angular, horned, bat-winged ---- */
+function pGargoyle(x, c) {
+  const { s, fx, back } = c, P = CPAL.gargoyle;
+  const bodyY = 0, headX = fx * s * 0.08, headY = bodyY - s * 0.26;
+  if (!back) crWing(x, c, { type: 'bat', rootX: s * 0.12, rootY: bodyY - s * 0.12, span: s * 0.7, col: P.wing, dark: P.dark, flap: 0.4 });
+  // crouched legs with stone talons
+  for (const sgn of [-1, 1]) {
+    const lx = sgn * s * 0.12;
+    capsule(x, lx, bodyY + s * 0.08, lx + sgn * s * 0.06, bodyY + s * 0.2, s * 0.07, s * 0.05, P.dark);
+    capsule(x, lx + sgn * s * 0.06, bodyY + s * 0.2, lx + sgn * s * 0.02, bodyY + s * 0.3, s * 0.05, s * 0.04, P.stone);
+  }
+  // body: faceted block, with a crack across it
+  poly(x, [[-s * 0.17, bodyY - s * 0.16], [s * 0.17, bodyY - s * 0.16], [s * 0.2, bodyY], [s * 0.12, bodyY + s * 0.16], [-s * 0.12, bodyY + s * 0.16], [-s * 0.2, bodyY]], P.stone);
+  flat(x, [[-s * 0.17, bodyY - s * 0.16], [s * 0.17, bodyY - s * 0.16], [s * 0.1, bodyY - s * 0.08], [-s * 0.1, bodyY - s * 0.08]], P.lite, 0.55);
+  strokePath(x, [[-s * 0.08, bodyY - s * 0.1], [-s * 0.02, bodyY - s * 0.02], [-s * 0.06, bodyY + s * 0.06], [s * 0.02, bodyY + s * 0.12]], P.crack, s * 0.02);
+  if (back) crWing(x, c, { type: 'bat', rootX: s * 0.12, rootY: bodyY - s * 0.12, span: s * 0.7, col: P.wing, dark: P.dark, flap: 0.4 });
+  // arms clutching forward
+  for (const sgn of [-1, 1]) capsule(x, sgn * s * 0.17, bodyY - s * 0.1, sgn * s * 0.14 + fx * s * 0.08, bodyY + s * 0.06, s * 0.05, s * 0.04, P.stone);
+  // head: blocky with swept horns and a snout
+  for (const sgn of [-1, 1]) poly(x, [[headX + sgn * s * 0.05, headY - s * 0.08], [headX + sgn * s * 0.22, headY - s * 0.26], [headX + sgn * s * 0.12, headY - s * 0.05]], P.lite);
+  poly(x, [[headX - s * 0.11, headY - s * 0.09], [headX + s * 0.11, headY - s * 0.09], [headX + s * 0.12, headY + s * 0.06], [headX, headY + s * 0.1], [headX - s * 0.12, headY + s * 0.06]], P.stone);
+  if (!back) {
+    poly(x, [[headX + fx * s * 0.05 - s * 0.05, headY + s * 0.02], [headX + fx * s * 0.14 + s * 0.05 * (1 - c.side), headY + s * 0.02], [headX + fx * s * 0.1, headY + s * 0.1]], P.dark);
+    for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.045 * (1 - c.side * 0.5) + fx * s * 0.04, headY - s * 0.02, s * 0.026, P.eye);
+  }
+}
+
+/* ---- Tepegöz: the one-eyed giant. One eye, one horn, a tree for a club ---- */
+function pOgre(x, c) {
+  const { s, fx, back, ph, swing, ws } = c, P = CPAL.ogre, G = c.G;
+  const hipY = G - s * 0.26, chestY = hipY - s * 0.3, headX = fx * s * 0.06, headY = chestY - s * 0.14;
+  const clubAng = ws > 0 ? -1.9 + swing * 0.12 : Math.PI + 1.9 - swing * 0.12;
+  const hx = ws * s * 0.3, hy = chestY + s * 0.02;
+  if (back) crClub(x, hx, hy, clubAng, s * 0.62, s * 0.12, P.wood, [150, 150, 156]);
+  crLegs(x, c, { hipY, hipW: s * 0.14, len: s * 0.26, thick: s * 0.1, col: P.skin, foot: P.dark, stride: 0.1 });
+  // off arm hanging
+  capsule(x, -ws * s * 0.26, chestY, -ws * s * 0.32 + fx * s * 0.04, hipY + s * 0.02 + swing * s * 0.02, s * 0.1, s * 0.08, shade(P.skin, 0.9));
+  ell(x, -ws * s * 0.33 + fx * s * 0.04, hipY + s * 0.06, s * 0.08, s * 0.07, shade(P.skin, 0.85));
+  // torso: huge belly under slab shoulders
+  poly(x, [[-s * 0.3, chestY - s * 0.04], [s * 0.3, chestY - s * 0.04], [s * 0.27, hipY - s * 0.04], [-s * 0.27, hipY - s * 0.04]], P.skin);
+  if (!back) ell(x, fx * s * 0.04, hipY - s * 0.12, s * 0.22, s * 0.17, shade(P.skin, 1.08));
+  // hide loincloth with a fur hem
+  flat(x, [[-s * 0.26, hipY - s * 0.07], [s * 0.26, hipY - s * 0.07], [s * 0.2, hipY + s * 0.12], [-s * 0.2, hipY + s * 0.12]], P.hide);
+  for (let i = 0; i < 6; i++) ell(x, -s * 0.18 + i * s * 0.072, hipY + s * 0.12, s * 0.045, s * 0.03, P.fur);
+  // club arm
+  capsule(x, ws * s * 0.26, chestY, hx, hy, s * 0.1, s * 0.09, P.skin);
+  if (!back) crClub(x, hx, hy, clubAng, s * 0.62, s * 0.12, P.wood, [150, 150, 156]);
+  ell(x, hx, hy, s * 0.075, s * 0.07, P.skin);
+  // head sunk into the shoulders
+  ell(x, headX, headY, s * 0.17, s * 0.15, P.skin);
+  poly(x, [[headX - s * 0.04, headY - s * 0.12], [headX + s * 0.04, headY - s * 0.12], [headX + s * 0.01, headY - s * 0.3], [headX - s * 0.01, headY - s * 0.3]], P.horn);
+  if (!back) {
+    // the eye: single, huge, dead centre -- this is the whole creature
+    const ex = headX + fx * s * 0.07;
+    ell(x, ex, headY - s * 0.02, s * 0.075 * (1 - c.side * 0.35), s * 0.065, [240, 232, 210]);
+    eyeDot(x, ex + fx * s * 0.015, headY - s * 0.02, s * 0.038, '#c83a1e');
+    flat(x, [[ex - s * 0.09, headY - s * 0.1], [ex + s * 0.09, headY - s * 0.1], [ex + s * 0.07, headY - s * 0.07], [ex - s * 0.07, headY - s * 0.07]], P.dark);
+    flat(x, [[headX - s * 0.1 + fx * s * 0.05, headY + s * 0.06], [headX + s * 0.1 + fx * s * 0.05, headY + s * 0.06], [headX + fx * s * 0.05, headY + s * 0.11]], P.mouth);
+    for (const sgn of [-1, 1]) flat(x, [[headX + sgn * s * 0.07 + fx * s * 0.05, headY + s * 0.07], [headX + sgn * s * 0.05 + fx * s * 0.05, headY + s * 0.07], [headX + sgn * s * 0.07 + fx * s * 0.05, headY + s * 0.0]], P.horn);
+  }
+}
+
+/* ---- Kara Yel: a hooded ghost of black wind, trailing into wisps ---- */
+function pWraith(x, c) {
+  const { s, fx, back, ph, ws } = c, P = CPAL.wraith;
+  const topY = -s * 0.44, headX = fx * s * 0.06;
+  // tattered cloak: wide at the shoulders, torn into three trailing wisps
+  const w = (k) => Math.sin(ph + k) * s * 0.06;
+  poly(x, [[headX - s * 0.18, topY + s * 0.18], [headX + s * 0.18, topY + s * 0.18], [s * 0.22, s * 0.1],
+           [s * 0.16 + w(0), s * 0.42], [s * 0.07, s * 0.2], [w(1), s * 0.5], [-s * 0.07, s * 0.2], [-s * 0.16 + w(2), s * 0.42], [-s * 0.22, s * 0.1]], P.cloak);
+  flat(x, [[headX - s * 0.16, topY + s * 0.2], [headX + s * 0.16, topY + s * 0.2], [s * 0.1, s * 0.05], [-s * 0.1, s * 0.05]], P.lite, 0.35);
+  // bony hand and scythe
+  const hx = ws * s * 0.2 + fx * s * 0.04, hy = topY + s * 0.36;
+  x.save(); x.translate(hx, hy); x.rotate(ws > 0 ? -1.35 : Math.PI + 1.35);
+  capsule(x, -s * 0.3, 0, s * 0.42, 0, s * 0.022, s * 0.02, [58, 50, 62]);
+  x.save(); x.translate(s * 0.42, 0); if (ws < 0) x.scale(1, -1);
+  x.beginPath(); x.moveTo(0, 0); x.quadraticCurveTo(-s * 0.04, s * 0.3, -s * 0.3, s * 0.34);
+  x.quadraticCurveTo(-s * 0.06, s * 0.16, -s * 0.02, 0); x.closePath();
+  const g = x.createLinearGradient(0, 0, -s * 0.3, s * 0.3); g.addColorStop(0, '#e6f6fa'); g.addColorStop(1, '#5c7f8c');
+  x.fillStyle = g; x.fill(); x.restore(); x.restore();
+  ell(x, hx, hy, s * 0.04, s * 0.035, P.bone);
+  // hood: a peaked cowl, black inside, two cold eyes
+  poly(x, [[headX - s * 0.16, topY + s * 0.2], [headX + s * 0.16, topY + s * 0.2], [headX + s * 0.12, topY], [headX - (fx || 0.3) * s * 0.12, topY - s * 0.1], [headX - s * 0.12, topY]], P.cloak);
+  if (!back) {
+    ell(x, headX + fx * s * 0.04, topY + s * 0.1, s * 0.09 * (1 - c.side * 0.3), s * 0.09, [6, 8, 14]);
+    for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.035 * (1 - c.side * 0.5) + fx * s * 0.06, topY + s * 0.1, s * 0.022, P.glow);
+  }
+}
+
+/* ---- Erlik Kağan: lord of the underworld -- horned crown, beard, cape,
+        blackened plate with ember cracks, a burning curved blade ---- */
+function pKhan(x, c) {
+  const { s, fx, back, ph, swing, ws } = c, P = CPAL.khan, G = c.G;
+  const hipY = G - s * 0.3, chestY = hipY - s * 0.3, headX = fx * s * 0.04, headY = chestY - s * 0.17;
+  const cape = () => {
+    const sw = Math.sin(ph) * s * 0.03;
+    poly(x, [[-s * 0.24, chestY - s * 0.04], [s * 0.24, chestY - s * 0.04], [s * 0.32 + sw, G - s * 0.02], [s * 0.1, G + s * 0.02], [-s * 0.12, G - s * 0.03], [-s * 0.32 + sw, G]], back ? P.cape : P.capeDark);
+    if (back) for (const k of [-0.14, 0, 0.14]) flat(x, [[k * s - s * 0.02, chestY + s * 0.02], [k * s + s * 0.02, chestY + s * 0.02], [k * s * 1.6 + s * 0.04 + sw, G - s * 0.02], [k * s * 1.6 - s * 0.03 + sw, G - s * 0.02]], P.capeDark, 0.6);
+    flat(x, [[-s * 0.22, chestY - s * 0.06], [s * 0.22, chestY - s * 0.06], [s * 0.24, chestY - s * 0.02], [-s * 0.24, chestY - s * 0.02]], P.gold);
+  };
+  if (!back) cape();
+  crLegs(x, c, { hipY, hipW: s * 0.1, len: s * 0.3, thick: s * 0.07, col: P.armor, foot: [30, 26, 34], stride: 0.1 });
+  // plate skirt and breastplate, with glowing seams
+  poly(x, [[-s * 0.2, hipY - s * 0.06], [s * 0.2, hipY - s * 0.06], [s * 0.24, hipY + s * 0.14], [-s * 0.24, hipY + s * 0.14]], P.armor);
+  poly(x, [[-s * 0.24, chestY - s * 0.05], [s * 0.24, chestY - s * 0.05], [s * 0.19, hipY - s * 0.02], [-s * 0.19, hipY - s * 0.02]], P.armor);
+  if (!back) {
+    strokePath(x, [[0, chestY], [-s * 0.05, chestY + s * 0.1], [s * 0.03, chestY + s * 0.18], [-s * 0.02, hipY - s * 0.04]], P.ember, s * 0.022);
+    strokePath(x, [[-s * 0.16, chestY + s * 0.06], [-s * 0.08, chestY + s * 0.12]], P.ember, s * 0.016);
+    strokePath(x, [[s * 0.16, chestY + s * 0.08], [s * 0.09, chestY + s * 0.15]], P.ember, s * 0.016);
+  }
+  flat(x, [[-s * 0.2, hipY - s * 0.07], [s * 0.2, hipY - s * 0.07], [s * 0.2, hipY - s * 0.02], [-s * 0.2, hipY - s * 0.02]], P.gold);
+  // spiked pauldrons
+  for (const sgn of [-1, 1]) {
+    ell(x, sgn * s * 0.24, chestY - s * 0.01, s * 0.1, s * 0.075, P.lite);
+    for (let k = 0; k < 3; k++) poly(x, [[sgn * s * (0.18 + k * 0.05), chestY - s * 0.06], [sgn * s * (0.2 + k * 0.05), chestY - s * 0.15], [sgn * s * (0.22 + k * 0.05), chestY - s * 0.06]], P.horn);
+  }
+  // blade arm
+  const hx = ws * s * 0.28, hy = chestY + s * 0.14 - swing * s * 0.03;
+  capsule(x, ws * s * 0.24, chestY + s * 0.02, hx, hy, s * 0.06, s * 0.055, P.armor);
+  crSabre(x, hx, hy, ws > 0 ? -0.95 : Math.PI + 0.95, s * 0.62, s, [120, 60, 50], [40, 30, 30]);
+  if (!back) {
+    x.save(); x.translate(hx, hy); x.rotate(ws > 0 ? -0.95 : Math.PI + 0.95);
+    strokePath(x, [[s * 0.1, -s * 0.04], [s * 0.38, -s * 0.07], [s * 0.6, -s * 0.15]], P.ember, s * 0.02);
+    x.restore();
+  }
+  if (back) cape();
+  // head: dark red face, long black beard, horned iron crown
+  if (!back) poly(x, [[headX - s * 0.08, headY + s * 0.04], [headX + s * 0.08, headY + s * 0.04], [headX + s * 0.04 + fx * s * 0.03, headY + s * 0.26], [headX + fx * s * 0.03, headY + s * 0.3], [headX - s * 0.04 + fx * s * 0.03, headY + s * 0.26]], P.beard);
+  ell(x, headX, headY, s * 0.1, s * 0.11, back ? P.beard : P.skin);
+  if (!back) for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.04 * (1 - c.side * 0.5) + fx * s * 0.04, headY - s * 0.01, s * 0.024, P.eye);
+  flat(x, [[headX - s * 0.12, headY - s * 0.06], [headX + s * 0.12, headY - s * 0.06], [headX + s * 0.11, headY - s * 0.13], [headX - s * 0.11, headY - s * 0.13]], P.gold);
+  for (const k of [-0.06, 0, 0.06]) poly(x, [[headX + k * s - s * 0.02, headY - s * 0.12], [headX + k * s, headY - s * 0.21], [headX + k * s + s * 0.02, headY - s * 0.12]], P.gold);
+  for (const sgn of [-1, 1]) {
+    x.save(); x.fillStyle = rgb(...P.horn);
+    x.beginPath(); x.moveTo(headX + sgn * s * 0.09, headY - s * 0.1);
+    x.quadraticCurveTo(headX + sgn * s * 0.3, headY - s * 0.12, headX + sgn * s * 0.26, headY - s * 0.36);
+    x.quadraticCurveTo(headX + sgn * s * 0.22, headY - s * 0.17, headX + sgn * s * 0.08, headY - s * 0.05);
+    x.closePath(); x.fill(); x.restore();
+  }
+}
+
+/* ---- Gök Ejder: the sky dragon. A real neck, head, wings and tail ---- */
+function pWyrm(x, c) {
+  const { s, fx, fy, back, ph } = c, P = CPAL.wyrm;
+  const bodyY = s * 0.02;
+  const hdx = fx * s * 0.42, hdy = bodyY - s * 0.34 + fy * s * 0.06;
+  const neck = (col) => {
+    const pts = [];
+    for (let i = 0; i <= 5; i++) {
+      const t = i / 5;
+      pts.push([hdx * t, bodyY - s * 0.1 + (hdy - bodyY + s * 0.1) * t - Math.sin(t * Math.PI) * s * 0.1, t]);
+    }
+    for (let i = 1; i < pts.length; i++) capsule(x, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], s * (0.12 - pts[i - 1][2] * 0.05), s * (0.12 - pts[i][2] * 0.05), col);
+    if (!back && fy > -0.2) strokePath(x, pts.slice(0, 5).map(p => [p[0] + fx * s * 0.03, p[1] + s * 0.04]), P.belly, s * 0.05);
+  };
+  const head = () => {
+    const hx = hdx, hy = hdy, dx = fx || 0.001;
+    for (const sgn of [-1, 1]) {
+      x.save(); x.fillStyle = rgb(...P.horn);
+      x.beginPath(); x.moveTo(hx + sgn * s * 0.04 - dx * s * 0.02, hy - s * 0.06);
+      x.quadraticCurveTo(hx + sgn * s * 0.08 - dx * s * 0.16, hy - s * 0.14, hx + sgn * s * 0.05 - dx * s * 0.24, hy - s * 0.2);
+      x.quadraticCurveTo(hx + sgn * s * 0.03 - dx * s * 0.1, hy - s * 0.1, hx + sgn * s * 0.01, hy - s * 0.03);
+      x.closePath(); x.fill(); x.restore();
+    }
+    ell(x, hx, hy, s * 0.11, s * 0.09, P.scale);
+    if (back) return;
+    // snout and jaw, pointing along the facing (toward the camera when fy > 0)
+    const sx = hx + fx * s * 0.14, sy = hy + s * 0.03 + fy * s * 0.05;
+    poly(x, [[hx - s * 0.06, hy - s * 0.02], [hx + s * 0.06, hy - s * 0.02], [sx + fx * s * 0.06 + s * 0.04 * (1 - c.side), sy], [sx + fx * s * 0.06 - s * 0.04 * (1 - c.side), sy]], P.scale);
+    poly(x, [[hx - s * 0.05, hy + s * 0.04], [hx + s * 0.05, hy + s * 0.04], [sx + fx * s * 0.04, sy + s * 0.06 + Math.max(0, Math.sin(ph)) * s * 0.03]], P.dark);
+    for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, hx + sgn * s * 0.045 * (1 - c.side * 0.5) + fx * s * 0.03, hy - s * 0.02, s * 0.026, P.eye);
+  };
+  // tail: sweeps away from the facing and curls
+  const tdir = -(fx || 0.35);
+  for (let i = 0; i < 8; i++) {
+    const t = i / 7;
+    const tx = tdir * s * (0.12 + t * 0.5), ty = bodyY + s * (0.12 + t * 0.2) - Math.sin(t * 3 + ph) * s * 0.06 * t;
+    ell(x, tx, ty, s * (0.1 - t * 0.075), s * (0.08 - t * 0.058), shade(P.scale, 0.9 - t * 0.2));
+  }
+  { const t = 1, tx = tdir * s * 0.62, ty = bodyY + s * 0.32 - Math.sin(3 + ph) * s * 0.06;
+    poly(x, [[tx, ty - s * 0.05], [tx + tdir * s * 0.12, ty], [tx, ty + s * 0.05]], P.wingDark); }
+  if (back) { neck(P.scale); head(); }
+  if (!back) crWing(x, c, { type: 'bat', rootX: s * 0.14, rootY: bodyY - s * 0.12, span: s * 0.78, col: P.wing, dark: P.wingDark, flap: 0.5 });
+  // body with a gold belly and a dorsal ridge
+  ell(x, 0, bodyY, s * 0.22, s * 0.19, P.scale);
+  if (!back) ell(x, fx * s * 0.03, bodyY + s * 0.05, s * 0.13, s * 0.12, P.belly);
+  else for (let i = 0; i < 4; i++) flat(x, [[-s * 0.03, bodyY - s * 0.16 + i * s * 0.08], [s * 0.03, bodyY - s * 0.16 + i * s * 0.08], [0, bodyY - s * 0.23 + i * s * 0.08]], P.horn);
+  for (const sgn of [-1, 1]) capsule(x, sgn * s * 0.12, bodyY + s * 0.1, sgn * s * 0.15, bodyY + s * 0.26, s * 0.05, s * 0.035, P.dark);
+  if (back) crWing(x, c, { type: 'bat', rootX: s * 0.14, rootY: bodyY - s * 0.12, span: s * 0.78, col: P.wing, dark: P.wingDark, flap: 0.5 });
+  if (!back) { neck(P.scale); head(); }
+}
+
+/* ---- Ötüken Devi: the final boss. A hill that got up -- a boulder body,
+        mossed shoulders with a tree growing out of one, glowing seams ---- */
+function pTitan(x, c) {
+  const { s, fx, back, ph, swing } = c, P = CPAL.titan, G = c.G;
+  const hipY = G - s * 0.24, chestY = hipY - s * 0.36, headX = fx * s * 0.06, headY = chestY - s * 0.02;
+  const treeSide = -1;
+  const tree = () => {
+    const bx = treeSide * s * 0.24, by = chestY - s * 0.12;
+    capsule(x, bx, by, bx - s * 0.04, by - s * 0.34, s * 0.04, s * 0.025, P.wood);
+    capsule(x, bx - s * 0.02, by - s * 0.18, bx + s * 0.1, by - s * 0.3, s * 0.02, s * 0.012, P.wood);
+    for (const [ox, oy, r] of [[-0.04, -0.4, 0.12], [0.07, -0.34, 0.09], [-0.14, -0.3, 0.08], [0.0, -0.3, 0.1]]) ell(x, bx + ox * s, by + oy * s, s * r, s * r * 0.85, P.leaf);
+  };
+  if (back) tree();
+  crLegs(x, c, { hipY, hipW: s * 0.14, len: s * 0.24, thick: s * 0.11, col: P.rock, foot: P.dark, stride: 0.08 });
+  // arms: stone pillars reaching nearly to the ground
+  const arm = (sgn, dim) => {
+    const sx = sgn * s * 0.3, sy = chestY + s * 0.02, ex = sgn * s * 0.38 + fx * s * 0.04, ey = hipY - s * 0.02 - swing * sgn * s * 0.02;
+    capsule(x, sx, sy, ex, ey, s * 0.12, s * 0.1, shade(P.rock, dim));
+    poly(x, [[ex - s * 0.12, ey - s * 0.02], [ex + s * 0.12, ey - s * 0.02], [ex + s * 0.1, ey + s * 0.16], [ex - s * 0.1, ey + s * 0.16]], shade(P.dark, dim * 1.2));
+  };
+  arm(fx >= 0 ? -1 : 1, 0.75);
+  // body: an irregular boulder
+  poly(x, [[-s * 0.3, chestY - s * 0.06], [-s * 0.1, chestY - s * 0.14], [s * 0.14, chestY - s * 0.12], [s * 0.32, chestY - s * 0.02], [s * 0.28, hipY], [s * 0.1, hipY + s * 0.06], [-s * 0.16, hipY + s * 0.04], [-s * 0.3, hipY - s * 0.04]], P.rock);
+  flat(x, [[-s * 0.26, chestY - s * 0.06], [-s * 0.08, chestY - s * 0.13], [s * 0.12, chestY - s * 0.11], [s * 0.26, chestY - s * 0.03], [s * 0.1, chestY + s * 0.02], [-s * 0.14, chestY + s * 0.01]], P.lite, 0.4);
+  if (!back) {
+    strokePath(x, [[-s * 0.06, chestY + s * 0.04], [s * 0.02, chestY + s * 0.14], [-s * 0.04, chestY + s * 0.24], [s * 0.05, hipY - s * 0.02]], P.glow, s * 0.025);
+    strokePath(x, [[s * 0.02, chestY + s * 0.14], [s * 0.14, chestY + s * 0.18]], P.glow, s * 0.018);
+  }
+  // moss on the shoulders
+  for (const sgn of [-1, 1]) {
+    ell(x, sgn * s * 0.24, chestY - s * 0.07, s * 0.13, s * 0.06, P.moss);
+    ell(x, sgn * s * 0.22, chestY - s * 0.09, s * 0.08, s * 0.035, P.mossLite);
+  }
+  if (!back) tree();
+  arm(fx >= 0 ? 1 : -1, 1);
+  // head: small, sunk between the shoulders -- the scale comes from contrast
+  ell(x, headX, headY, s * 0.1, s * 0.08, P.dark);
+  if (!back) for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.04 * (1 - c.side * 0.5) + fx * s * 0.04, headY, s * 0.026, P.glow);
+}
+
+/* ---- Kara Bakşı: steppe shaman -- antler headdress, fringed robe, drum ---- */
+function pBasci(x, c) {
+  const { s, fx, back, ph, swing, ws } = c, P = CPAL.basci, G = c.G;
+  const chestY = G - s * 0.62, headX = fx * s * 0.05, headY = chestY - s * 0.16;
+  const drum = () => {
+    const dx = -ws * s * 0.24 + fx * s * 0.04, dy = chestY + s * 0.16;
+    ell(x, dx, dy, s * (0.17 - c.side * 0.08), s * 0.17, P.rim);
+    if (!back) {
+      ell(x, dx, dy, s * (0.14 - c.side * 0.065), s * 0.14, P.hide);
+      strokePath(x, [[dx - s * 0.06 * (1 - c.side * 0.4), dy], [dx + s * 0.06 * (1 - c.side * 0.4), dy]], P.paint, s * 0.02);
+      strokePath(x, [[dx, dy - s * 0.07], [dx, dy + s * 0.07]], P.paint, s * 0.02);
+      ell(x, dx, dy, s * 0.025, s * 0.025, P.paint);
+    }
+  };
+  if (back) drum();
+  // robe down to the ground, a fringe at the hem that swings with the walk
+  poly(x, [[-s * 0.16, chestY - s * 0.02], [s * 0.16, chestY - s * 0.02], [s * 0.24, G - s * 0.06], [-s * 0.24, G - s * 0.06]], P.robe);
+  for (let i = 0; i < 9; i++) {
+    const fxp = -s * 0.22 + i * s * 0.055, sw2 = Math.sin(ph + i * 0.7) * s * 0.02;
+    strokePath(x, [[fxp, G - s * 0.08], [fxp + sw2, G]], P.fringe, s * 0.022);
+  }
+  flat(x, [[-s * 0.2, chestY + s * 0.2], [s * 0.2, chestY + s * 0.2], [s * 0.21, chestY + s * 0.25], [-s * 0.21, chestY + s * 0.25]], P.fringe);
+  if (!back) drum();
+  // beater arm, raised and falling with the cycle
+  const hx = ws * s * 0.2 + fx * s * 0.04, hy = chestY + s * 0.02 - Math.max(0, swing) * s * 0.08;
+  capsule(x, ws * s * 0.14, chestY + s * 0.02, hx, hy, s * 0.05, s * 0.045, P.robe);
+  capsule(x, hx, hy, hx - ws * s * 0.1, hy + s * 0.12, s * 0.016, s * 0.014, P.rim);
+  ell(x, hx - ws * s * 0.1, hy + s * 0.12, s * 0.03, s * 0.03, P.hide);
+  // head: shadowed face under a hood of fur, antlers above
+  for (const sgn of [-1, 1]) {
+    const bx = headX + sgn * s * 0.06, by = headY - s * 0.08;
+    capsule(x, bx, by, bx + sgn * s * 0.14, by - s * 0.2, s * 0.02, s * 0.012, P.antler);
+    capsule(x, bx + sgn * s * 0.07, by - s * 0.1, bx + sgn * s * 0.04, by - s * 0.22, s * 0.014, s * 0.008, P.antler);
+    capsule(x, bx + sgn * s * 0.11, by - s * 0.16, bx + sgn * s * 0.2, by - s * 0.18, s * 0.012, s * 0.008, P.antler);
+  }
+  ell(x, headX, headY, s * 0.12, s * 0.12, P.dark);
+  if (!back) {
+    ell(x, headX + fx * s * 0.03, headY + s * 0.02, s * 0.075 * (1 - c.side * 0.3), s * 0.08, P.skin);
+    for (let i = -2; i <= 2; i++) strokePath(x, [[headX + fx * s * 0.03 + i * s * 0.025, headY + s * 0.04], [headX + fx * s * 0.03 + i * s * 0.025, headY + s * 0.11]], P.fringe, s * 0.012);
+    for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.032 * (1 - c.side * 0.5) + fx * s * 0.05, headY, s * 0.02, P.glow);
+  }
+}
+
+/* ---- Umay Ana: the healer. Pale gown, braids, a sun-disc crown and staff ---- */
+function pUmay(x, c) {
+  const { s, fx, back, ph, ws } = c, P = CPAL.umay, G = c.G;
+  const chestY = G - s * 0.62, headX = fx * s * 0.04, headY = chestY - s * 0.16;
+  const sun = (cx, cy, r, n) => {
+    for (let i = 0; i < n; i++) {
+      const a = i / n * TAU + ph * 0.1;
+      flat(x, [[cx + Math.cos(a - 0.1) * r * 0.85, cy + Math.sin(a - 0.1) * r * 0.85], [cx + Math.cos(a) * r * 1.4, cy + Math.sin(a) * r * 1.4], [cx + Math.cos(a + 0.1) * r * 0.85, cy + Math.sin(a + 0.1) * r * 0.85]], P.gold);
+    }
+    ell(x, cx, cy, r, r, P.gold);
+    ell(x, cx, cy, r * 0.72, r * 0.72, P.goldLite);
+  };
+  // the halo: large, behind the head, readable from every angle
+  sun(headX, headY - s * 0.02, s * 0.2, 14);
+  for (const sgn of [-1, 1]) for (let i = 0; i < 4; i++) ell(x, headX + sgn * s * 0.09, headY + s * (0.08 + i * 0.07), s * 0.032, s * 0.036, P.hair);
+  const hx = ws * s * 0.22, hy = chestY + s * 0.14;
+  capsule(x, hx, G - s * 0.02, hx, chestY - s * 0.26, s * 0.02, s * 0.018, [120, 90, 50]);
+  sun(hx, chestY - s * 0.3, s * 0.07, 8);
+  // gown with a deep blue panel down the front and a gold hem
+  poly(x, [[-s * 0.14, chestY - s * 0.02], [s * 0.14, chestY - s * 0.02], [s * 0.26, G], [-s * 0.26, G]], P.robe);
+  if (!back) flat(x, [[-s * 0.05 + fx * s * 0.03, chestY + s * 0.16], [s * 0.05 + fx * s * 0.03, chestY + s * 0.16], [s * 0.1 + fx * s * 0.04, G - s * 0.05], [-s * 0.1 + fx * s * 0.04, G - s * 0.05]], [52, 92, 128]);
+  flat(x, [[-s * 0.24, G - s * 0.06], [s * 0.24, G - s * 0.06], [s * 0.26, G], [-s * 0.26, G]], P.gold);
+  flat(x, [[-s * 0.13, chestY + s * 0.13], [s * 0.13, chestY + s * 0.13], [s * 0.14, chestY + s * 0.17], [-s * 0.14, chestY + s * 0.17]], P.gold);
+  capsule(x, ws * s * 0.12, chestY + s * 0.02, hx, hy, s * 0.045, s * 0.04, P.robe);
+  ell(x, hx, hy, s * 0.03, s * 0.03, P.skin);
+  capsule(x, -ws * s * 0.12, chestY + s * 0.02, -ws * s * 0.16 + fx * s * 0.04, chestY + s * 0.22, s * 0.045, s * 0.04, shade(P.robe, 0.9));
+  // head: a low round cap with a pair of small bird wings -- Umay is a bird goddess
+  ell(x, headX, headY, s * 0.09, s * 0.1, back ? P.hair : P.skin);
+  for (const sgn of [-1, 1]) poly(x, [[headX + sgn * s * 0.07, headY - s * 0.07], [headX + sgn * s * 0.2, headY - s * 0.2], [headX + sgn * s * 0.17, headY - s * 0.1], [headX + sgn * s * 0.21, headY - s * 0.12], [headX + sgn * s * 0.09, headY - s * 0.03]], P.robe);
+  ell(x, headX, headY - s * 0.07, s * 0.1, s * 0.06, P.gold);
+  if (!back) for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, headX + sgn * s * 0.035 * (1 - c.side * 0.5) + fx * s * 0.035, headY + s * 0.005, s * 0.018, '#3a2a20');
+}
+
+/* ---- Yelbegen: the many-headed giant -- three heads on one yoke ---- */
+function pYelbegen(x, c) {
+  const { s, fx, back, ph, swing, ws } = c, P = CPAL.yelbegen, G = c.G;
+  const hipY = G - s * 0.26, chestY = hipY - s * 0.3, yokeY = chestY - s * 0.08;
+  const clubAng = ws > 0 ? -1.75 + swing * 0.12 : Math.PI + 1.75 - swing * 0.12;
+  const hx = ws * s * 0.3, hy = chestY + s * 0.06;
+  if (back) crClub(x, hx, hy, clubAng, s * 0.52, s * 0.1, P.wood, [150, 150, 156]);
+  crLegs(x, c, { hipY, hipW: s * 0.13, len: s * 0.26, thick: s * 0.09, col: P.skin, foot: P.dark, stride: 0.1 });
+  capsule(x, -ws * s * 0.28, chestY, -ws * s * 0.32 + fx * s * 0.04, hipY + s * 0.04 + swing * s * 0.02, s * 0.09, s * 0.075, shade(P.skin, 0.88));
+  poly(x, [[-s * 0.32, chestY - s * 0.06], [s * 0.32, chestY - s * 0.06], [s * 0.24, hipY], [-s * 0.24, hipY]], P.skin);
+  flat(x, [[-s * 0.24, hipY - s * 0.05], [s * 0.24, hipY - s * 0.05], [s * 0.2, hipY + s * 0.12], [-s * 0.2, hipY + s * 0.12]], P.hide);
+  if (!back) ell(x, fx * s * 0.03, chestY + s * 0.12, s * 0.17, s * 0.12, shade(P.skin, 1.1));
+  strokePath(x, [[-s * 0.22, hipY - s * 0.04], [s * 0.22, hipY - s * 0.04]], P.dark, s * 0.04);
+  ell(x, 0, yokeY + s * 0.02, s * 0.36, s * 0.1, [52, 40, 32]);
+  for (let i = 0; i < 7; i++) ell(x, -s * 0.3 + i * s * 0.1, yokeY + s * 0.09, s * 0.05, s * 0.035, [74, 58, 44]);
+  capsule(x, ws * s * 0.28, chestY, hx, hy, s * 0.09, s * 0.08, P.skin);
+  if (!back) crClub(x, hx, hy, clubAng, s * 0.52, s * 0.1, P.wood, [150, 150, 156]);
+  // three heads: the side ones smaller and turned outward. They bob out of
+  // phase so the silhouette keeps moving even when the giant is not.
+  const heads = [[-1, 0.13, 0.7], [1, 0.13, 0.7], [0, 0.17, 1]];
+  for (const [k, r, sc] of heads) {
+    const hx2 = k * s * 0.22 + fx * s * 0.05, hy2 = yokeY - s * 0.12 * sc + Math.sin(ph + k * 2) * s * 0.012;
+    capsule(x, k * s * 0.18, yokeY + s * 0.02, hx2, hy2 + s * 0.06, s * 0.06 * sc, s * 0.055 * sc, P.skin);
+    for (const sgn of [-1, 1]) poly(x, [[hx2 + sgn * s * 0.04 * sc, hy2 - s * 0.08 * sc], [hx2 + sgn * s * 0.12 * sc, hy2 - s * 0.2 * sc], [hx2 + sgn * s * 0.09 * sc, hy2 - s * 0.05 * sc]], P.horn);
+    ell(x, hx2, hy2, s * r * 0.9, s * r * 0.8, P.skin);
+    if (back) continue;
+    const look = k * 0.06 * s + fx * s * 0.04;
+    flat(x, [[hx2 - s * 0.07 * sc + look, hy2 + s * 0.03 * sc], [hx2 + s * 0.07 * sc + look, hy2 + s * 0.03 * sc], [hx2 + look, hy2 + s * 0.09 * sc]], P.mouth);
+    for (const sgn of [-1, 1]) flat(x, [[hx2 + sgn * s * 0.05 * sc + look, hy2 + s * 0.035 * sc], [hx2 + sgn * s * 0.035 * sc + look, hy2 + s * 0.035 * sc], [hx2 + sgn * s * 0.045 * sc + look, hy2 + s * 0.085 * sc]], P.horn);
+    for (const sgn of [-1, 1]) eyeDot(x, hx2 + sgn * s * 0.045 * sc + look, hy2 - s * 0.02 * sc, s * 0.024 * Math.max(0.8, sc), P.eye);
+  }
+}
+
+/* ---- Yelbegen Yavrusu: one of Yelbegen's severed heads, still snapping,
+        scuttling on stubby legs ---- */
+function pYavru(x, c) {
+  const { s, fx, back, ph, swing } = c, P = CPAL.yelbegen, G = c.G;
+  const hy = G - s * 0.28, hx = fx * s * 0.04;
+  // four little legs, alternating
+  for (const [sgn, k] of [[-1, 0], [1, 1], [-1, 2], [1, 3]]) {
+    const off = (k < 2 ? -1 : 1) * s * 0.08, sw = Math.sin(ph + k * Math.PI / 2) * s * 0.06;
+    const lx = sgn * s * 0.16, ly = hy + s * 0.08;
+    const kx = lx + sgn * s * 0.12 + off * 0.3, ky = ly - s * 0.06;
+    capsule(x, lx + off * 0.3, ly, kx, ky, s * 0.045, s * 0.035, k % 2 ? P.skin : P.dark);
+    capsule(x, kx, ky, kx + sgn * s * 0.06 + sw, G - s * 0.02, s * 0.035, s * 0.022, k % 2 ? P.skin : P.dark);
+  }
+  for (const sgn of [-1, 1]) poly(x, [[hx + sgn * s * 0.08, hy - s * 0.16], [hx + sgn * s * 0.24, hy - s * 0.36], [hx + sgn * s * 0.18, hy - s * 0.1]], P.horn);
+  ell(x, hx, hy, s * 0.26, s * 0.22, P.skin);
+  if (back) return;
+  // the jaw snaps open and shut with the cycle
+  const open = (0.5 + 0.5 * Math.sin(ph * 2)) * s * 0.07;
+  flat(x, [[hx - s * 0.18 + fx * s * 0.06, hy + s * 0.04], [hx + s * 0.18 + fx * s * 0.06, hy + s * 0.04], [hx + s * 0.12 + fx * s * 0.06, hy + s * 0.1 + open], [hx - s * 0.12 + fx * s * 0.06, hy + s * 0.1 + open]], P.mouth);
+  for (let i = -2; i <= 2; i++) {
+    const tx = hx + i * s * 0.06 + fx * s * 0.06;
+    flat(x, [[tx - s * 0.02, hy + s * 0.04], [tx + s * 0.02, hy + s * 0.04], [tx, hy + s * 0.09]], P.horn);
+    flat(x, [[tx - s * 0.02, hy + s * 0.1 + open], [tx + s * 0.02, hy + s * 0.1 + open], [tx, hy + s * 0.06 + open]], P.horn);
+  }
+  flat(x, [[hx - s * 0.18 + fx * s * 0.05, hy - s * 0.1], [hx - s * 0.03 + fx * s * 0.05, hy - s * 0.05], [hx - s * 0.18 + fx * s * 0.05, hy - s * 0.06]], P.dark);
+  flat(x, [[hx + s * 0.18 + fx * s * 0.05, hy - s * 0.1], [hx + s * 0.03 + fx * s * 0.05, hy - s * 0.05], [hx + s * 0.18 + fx * s * 0.05, hy - s * 0.06]], P.dark);
+  for (const sgn of [-1, 1]) if (sgn * fx > -0.3) eyeDot(x, hx + sgn * s * 0.09 * (1 - c.side * 0.4) + fx * s * 0.06, hy - s * 0.04, s * 0.045, P.eye);
+}
+
+const CREATURE_PAINTERS = {
+  kobold: pKobold, ghoul: pGhoul, grunt: pGrunt, harpy: pHarpy, gargoyle: pGargoyle,
+  ogre: pOgre, wraith: pWraith, khan: pKhan, wyrm: pWyrm, titan: pTitan,
+  basci: pBasci, umay: pUmay, yelbegen: pYelbegen, yelbegenYavru: pYavru
+};
+function drawCreature(x, def, d, f) {
+  const c = crCtx(def, d, f);
+  x.save(); x.translate(0, -c.bob * def.s * 0.035);
+  (CREATURE_PAINTERS[def.look] || pKobold)(x, c);
   x.restore();
 }
 
@@ -2243,56 +2726,46 @@ const BRANCH_TINT = {
 /* ---------- creep archetypes ---------- */
 const CREEPS = {
   kobold: {
-    name: 'Kobold', hpMul: 0.55, armor: 1, air: false, speed: 46, px: 68, s: 34, leg: 0.30, head: 0.15,
-    kind: 'humanoid', weapon: 'spear', fangs: true, ears: true, snout: true, eye: '#ffe07a',
-    pal: { body: [140, 104, 62], limb: [112, 82, 50], armor: [150, 140, 120], accent: [220, 190, 120], horn: [230, 220, 200] }
+    name: 'Kobold', hpMul: 0.55, armor: 1, air: false, speed: 46, px: 68, s: 34,
+    kind: 'humanoid'
   },
   ghoul: {
-    name: 'Gulyabani', hpMul: 0.75, armor: 2, air: false, speed: 54, px: 74, s: 36, leg: 0.30, head: 0.155,
-    kind: 'humanoid', weapon: 'claw', fangs: true, ears: true, eye: '#c8ff7a', hair: true,
-    pal: { body: [128, 148, 112], limb: [104, 122, 92], armor: [120, 120, 110], accent: [190, 220, 140], horn: [220, 220, 200] }
+    name: 'Gulyabani', hpMul: 0.75, armor: 2, air: false, speed: 54, px: 74, s: 36,
+    kind: 'humanoid'
   },
   grunt: {
-    name: 'Orduğ Savaşçısı', hpMul: 1.0, armor: 3, air: false, speed: 42, px: 80, s: 42, leg: 0.30, head: 0.16,
-    kind: 'humanoid', weapon: 'axe', armorPlate: true, shoulder: true, helmet: true, fangs: true, eye: '#ff9a5a',
-    pal: { body: [96, 132, 84], limb: [80, 112, 70], armor: [126, 100, 66], accent: [230, 180, 90], horn: [220, 210, 190] }
+    name: 'Orduğ Savaşçısı', hpMul: 1.0, armor: 3, air: false, speed: 42, px: 80, s: 42,
+    kind: 'humanoid'
   },
   harpy: {
-    name: 'Alkarısı', hpMul: 0.7, armor: 1, air: true, speed: 62, px: 92, s: 36, leg: 0.22, head: 0.145,
-    kind: 'flyer', wingType: 'feather', weapon: 'claw', eye: '#ffd0f0',
-    pal: { body: [150, 106, 158], limb: [124, 88, 132], wing: [186, 148, 196], armor: [160, 140, 170], accent: [240, 190, 240], horn: [230, 210, 230] }
+    name: 'Alkarısı', hpMul: 0.7, armor: 1, air: true, speed: 62, px: 92, s: 36,
+    kind: 'flyer'
   },
   gargoyle: {
-    name: 'Taş Yalman', hpMul: 1.05, armor: 3, air: true, speed: 44, px: 100, s: 42, leg: 0.24, head: 0.16,
-    kind: 'flyer', wingType: 'bat', weapon: 'claw', horns: true, ears: true, snout: true, eye: '#ff7040',
-    pal: { body: [116, 118, 126], limb: [96, 98, 108], wing: [88, 90, 102], armor: [140, 142, 150], accent: [190, 200, 210], horn: [200, 202, 212] }
+    name: 'Taş Yalman', hpMul: 1.05, armor: 3, air: true, speed: 44, px: 100, s: 42,
+    kind: 'flyer'
   },
   ogre: {
-    name: 'Tepegöz', hpMul: 1.9, armor: 4, air: false, speed: 36, px: 100, s: 56, leg: 0.28, head: 0.17, big: true,
-    kind: 'humanoid', weapon: 'club', shoulder: true, fangs: true, horns: true, eye: '#ffe08a',
-    pal: { body: [156, 128, 92], limb: [132, 106, 76], armor: [110, 88, 62], accent: [220, 180, 120], horn: [232, 224, 200] }
+    name: 'Tepegöz', hpMul: 1.9, armor: 4, air: false, speed: 36, px: 100, s: 56, big: true,
+    kind: 'humanoid'
   },
   wraith: {
-    name: 'Kara Yel', hpMul: 0.85, armor: 0, air: true, speed: 66, px: 84, s: 40, leg: 0.2, head: 0.15,
-    kind: 'wraith', weapon: 'scythe', cape: true, eye: '#7ef2ff', tint: 'rgba(80,190,220,0.18)',
-    pal: { body: [56, 66, 92], limb: [70, 84, 112], armor: [90, 110, 140], accent: [140, 230, 250], horn: [200, 240, 250] }
+    name: 'Kara Yel', hpMul: 0.85, armor: 0, air: true, speed: 66, px: 84, s: 40,
+    kind: 'wraith', tint: 'rgba(80,190,220,0.18)'
   },
   khan: {
-    name: 'Erlik Kağan', hpMul: 8, armor: 4, air: false, speed: 34, px: 126, s: 72, leg: 0.28, head: 0.16, big: true, boss: true,
-    kind: 'humanoid', weapon: 'blade', armorPlate: true, shoulder: true, helmet: true, horns: true, cape: true, eye: '#ff4d3a',
-    pal: { body: [92, 46, 52], limb: [74, 38, 44], armor: [88, 74, 96], accent: [255, 120, 80], horn: [60, 54, 66] }
+    name: 'Erlik Kağan', hpMul: 8, armor: 4, air: false, speed: 34, px: 126, s: 72, big: true, boss: true,
+    kind: 'humanoid'
   },
   wyrm: {
     // speed 50 -> 40: a boss that crosses the whole map in a straight line at
     // flyer speed leaked (5 lives) in 14 of 15 bot runs regardless of build
-    name: 'Gök Ejder', hpMul: 9, armor: 3, air: true, speed: 40, px: 146, s: 74, leg: 0.24, head: 0.16, big: true, boss: true,
-    kind: 'flyer', wingType: 'bat', weapon: 'claw', horns: true, snout: true, eye: '#ffe14a',
-    pal: { body: [150, 84, 52], limb: [124, 68, 44], wing: [178, 104, 58], armor: [200, 150, 80], accent: [255, 200, 110], horn: [240, 226, 190] }
+    name: 'Gök Ejder', hpMul: 9, armor: 3, air: true, speed: 40, px: 146, s: 74, big: true, boss: true,
+    kind: 'flyer'
   },
   titan: {
-    name: 'Ötüken Devi', hpMul: 11, armor: 4, air: false, speed: 30, px: 144, s: 84, leg: 0.28, head: 0.155, big: true, boss: true,
-    kind: 'humanoid', weapon: 'club', shoulder: true, armorPlate: true, horns: true, eye: '#8affd0',
-    pal: { body: [78, 96, 92], limb: [64, 80, 78], armor: [122, 132, 128], accent: [140, 255, 208], horn: [210, 226, 220] }
+    name: 'Ötüken Devi', hpMul: 11, armor: 4, air: false, speed: 30, px: 144, s: 84, big: true, boss: true,
+    kind: 'humanoid'
   },
   /* ---- Phase 1: ability creeps. Appended at the END of CREEPS on purpose --
      CIDX = Object.keys(CREEPS) is the wire index for the creep-type slot in
@@ -2302,34 +2775,33 @@ const CREEPS = {
   basci: {
     // ranged suppressor: a steppe shaman who curses a nearby tower silent
     // rather than dealing HP damage (towers have no HP -- see updateTowers).
-    name: 'Kara Bakşı', hpMul: 0.8, armor: 1, air: false, speed: 38, px: 78, s: 40, leg: 0.28, head: 0.16,
-    kind: 'humanoid', weapon: 'spear', cape: true, horns: false, ears: false, eye: '#c79bff',
-    pal: { body: [70, 46, 90], limb: [56, 38, 74], armor: [96, 70, 120], accent: [200, 150, 255], horn: [220, 200, 240] },
+    name: 'Kara Bakşı', hpMul: 0.8, armor: 1, air: false, speed: 38, px: 78, s: 40,
+    kind: 'humanoid',
     abil: { ranged: { range: 170, stun: 1.6, cd: 6.0 } }
   },
   umay: {
     // healer: named for Umay, the Turkic protector-goddess of mothers and the
     // newborn -- keeps nearby wounded allies patched up on a cooldown.
-    name: 'Umay Ana', hpMul: 0.9, armor: 1, air: false, speed: 40, px: 76, s: 38, leg: 0.28, head: 0.17,
-    kind: 'humanoid', cape: true, hair: true, eye: '#ffe9a0',
-    pal: { body: [196, 170, 110], limb: [172, 146, 92], armor: [220, 200, 150], accent: [255, 236, 180], horn: [240, 230, 200] },
+    name: 'Umay Ana', hpMul: 0.9, armor: 1, air: false, speed: 40, px: 76, s: 38,
+    kind: 'humanoid',
     abil: { heal: { range: 110, amount: 16, cd: 2.5 } }
   },
   yelbegen: {
     // splitter: the many-headed Yelbegen of the steppe epics -- cut one head
     // down and lesser heads scatter from the corpse (see killCreep).
-    name: 'Yelbegen', hpMul: 2.2, armor: 3, air: false, speed: 30, px: 118, s: 64, leg: 0.28, head: 0.155, big: true,
-    kind: 'humanoid', weapon: 'club', shoulder: true, horns: true, fangs: true, eye: '#ff6a3a',
-    pal: { body: [90, 62, 46], limb: [74, 50, 38], armor: [110, 80, 56], accent: [255, 140, 70], horn: [60, 44, 40] },
+    name: 'Yelbegen', hpMul: 2.2, armor: 3, air: false, speed: 30, px: 118, s: 64, big: true,
+    kind: 'humanoid',
     abil: { split: { count: 2, into: 'yelbegenYavru', hpFrac: 0.45, bountyFrac: 0.45 } }
   },
   yelbegenYavru: {
     // Yelbegen's severed head, still snapping -- the splitter's child type.
-    name: 'Yelbegen Yavrusu', hpMul: 0.5, armor: 1, air: false, speed: 52, px: 62, s: 32, leg: 0.30, head: 0.19,
-    kind: 'humanoid', weapon: 'claw', fangs: true, horns: true, eye: '#ff6a3a',
-    pal: { body: [98, 68, 50], limb: [80, 54, 42], armor: [116, 84, 58], accent: [255, 150, 80], horn: [64, 46, 42] }
+    name: 'Yelbegen Yavrusu', hpMul: 0.5, armor: 1, air: false, speed: 52, px: 62, s: 32,
+    kind: 'humanoid'
   }
 };
+
+// which painter draws it (see CREATURE_PAINTERS) -- the def's own key
+for (const k in CREEPS) CREEPS[k].look = k;
 
 /* ---------- wave table (30) ----------
    Each table entry is either a single [type,count] pair (today's shape) or
