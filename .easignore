@@ -1,0 +1,12 @@
+# EAS uploads the whole git repository, not just app/. None of this is part of
+# the iOS build (the game ships as app/assets/game/index.html), and the
+# screenshots alone are ~100 MB of tarball.
+store/
+tools/
+.claude/
+# anchored: ONLY the repo-root copy. An unanchored 'index.html' also matches
+# app/assets/game/index.html, which is the game the app actually ships.
+/index.html
+# privacy policy pages (served by GitHub Pages)
+/altay_tr.html
+/altay_en.html

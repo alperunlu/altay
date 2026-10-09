@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="index,follow">
+<title>Altay — Privacy Policy</title>
+<style>
+  :root{--bg:#0b0d12;--card:#14110f;--gold:#d6ac5c;--bone:#efe2c4;--dim:#a99f89;--line:rgba(214,172,92,.28)}
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:radial-gradient(ellipse 80% 40% at 50% 0%,#2a2113 0%,var(--bg) 60%) no-repeat,var(--bg);
+    color:var(--bone);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  main{max-width:760px;margin:0 auto;padding:40px 20px 72px}
+  .lang{text-align:right;font-size:14px}
+  a{color:var(--gold)}
+  h1{font:900 clamp(30px,7vw,44px)/1.1 Georgia,"Times New Roman",serif;letter-spacing:.06em;margin:18px 0 4px;color:var(--gold)}
+  .sub{color:var(--dim);margin:0 0 28px}
+  h2{font:700 21px/1.3 Georgia,"Times New Roman",serif;color:var(--gold);margin:34px 0 8px;padding-top:18px;border-top:1px solid var(--line)}
+  p,li{color:#e3d7bb}
+  ul{padding-left:22px}li{margin:6px 0}
+  .tldr{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:0 0 8px}
+  .tldr p{margin:.3em 0}
+  code{background:#000;border-radius:4px;padding:1px 6px;font-size:.92em;color:#f3e6c6}
+  .note{color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<p class="lang"><a href="altay_tr.html" hreflang="tr">Türkçe</a></p>
+<h1>Altay</h1>
+<p class="sub">Privacy Policy · Last updated: October 3, 2026</p>
+
+<div class="tldr">
+  <p><strong>In short:</strong> Altay collects no data that identifies you. No accounts, no ads, no analytics, no tracking. Solo play needs no internet connection.</p>
+  <p>Below is a plain account of the few situations in which the game talks to the network and what that means.</p>
+</div>
+
+<h2>Developer</h2>
+<p>Altay is an independent game developed by Alper Ünlü. This policy covers the iOS app and the devices it runs on.</p>
+
+<h2>Data stored on your device</h2>
+<ul>
+  <li><strong>Progress:</strong> The Glory you earn and the permanent upgrades you buy are kept in a file on your device.</li>
+  <li><strong>Settings:</strong> Your language, music and sound preferences, whether you have seen the tutorial, and which maps you have cleared are kept in the device's local storage.</li>
+</ul>
+<p>None of this is sent to the developer or to any server. Deleting the app deletes all of it.</p>
+
+<h2>Game Center (optional)</h2>
+<p>If you are signed in to Game Center on your device, the game submits your score and the difficulty you played to Apple's Game Center leaderboards when a run ends. This data is handled <strong>by Apple</strong> under Apple's privacy policy, and your Game Center nickname may be visible to other players on the leaderboard. As the developer, we do not receive your name, email or any other personal information. Signing out of Game Center, or turning it off in iOS Settings, stops score submission; the game remains fully playable.</p>
+
+<h2>Multiplayer (only if you start it)</h2>
+<p>When you join or create a room, devices connect to each other directly using WebRTC. To make that work:</p>
+<ul>
+  <li><strong>A matchmaking server</strong> (the PeerJS cloud service, <code>0.peerjs.com</code>) passes the room code and connection details so two devices can find each other. Game data does not travel through it.</li>
+  <li><strong>STUN servers</strong> (<code>stun.l.google.com</code>, <code>global.stun.twilio.com</code>) are used to learn the IP address your device presents to the internet.</li>
+  <li><strong>Relay (TURN) servers</strong> (PeerJS) carry the traffic if a direct connection cannot be made.</li>
+</ul>
+<p><strong>Please note:</strong> By the nature of this technique, players in the same room can see each other's IP address. Keep that in mind when sharing a room code with people you do not know. Only game state is exchanged between devices (tower and enemy positions, gold, lives) — no name, email, location or device identifier.</p>
+
+<h2>Updates</h2>
+<p>On launch the app checks for a new game update through Expo's update service (EAS Update). The request carries the app version, the platform and an update identifier; as with any network request, the server also sees your IP address. No personal information is sent. That service is covered by Expo's privacy policy (<a href="https://expo.dev/privacy">expo.dev/privacy</a>).</p>
+
+<h2>Sharing</h2>
+<p>When a run ends you may choose to share your score. That opens your device's own share sheet, and you decide where it goes. The app never sends anything anywhere on its own.</p>
+
+<h2>What we do not do</h2>
+<ul>
+  <li>We show no ads and offer no in-app purchases.</li>
+  <li>We use no analytics, crash-reporting or tracking software.</li>
+  <li>We do not sell your data or share it with third parties for marketing.</li>
+  <li>We do not access your location, contacts, camera or microphone.</li>
+</ul>
+
+<h2>Children</h2>
+<p>The app is not marketed to children and asks no one for their age, because it collects no data that identifies anyone.</p>
+
+<h2>Your rights</h2>
+<p>Because the developer holds no data that identifies you, there is no record to delete or correct. You can remove the on-device data by deleting the app, and manage your Game Center data with Apple's tools. If you have a question about your personal data, you can send it through the link below.</p>
+
+<h2>Changes</h2>
+<p>If this policy changes, this page will be updated and the date above will change.</p>
+
+<h2>Contact</h2>
+<p>Questions: <a href="https://github.com/alperunlu/altay/issues">github.com/alperunlu/altay/issues</a></p>
+
+</main>
+</body>
+</html>

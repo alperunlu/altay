@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "Altay",
+    "slug": "altay",
+    "version": "1.0.1",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "scheme": "altay",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0b0d12",
+    "assetBundlePatterns": [
+      "assets/**/*"
+    ],
+    "ios": {
+      "bundleIdentifier": "com.alu.altay",
+      "buildNumber": "1",
+      "supportsTablet": true,
+      "requireFullScreen": true,
+      "infoPlist": {
+        "UIRequiresFullScreen": true,
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleLocalizations": [
+          "en",
+          "tr"
+        ]
+      },
+      "entitlements": {
+        "com.apple.developer.game-center": true
+      }
+    },
+    "android": {
+      "package": "com.alu.altay",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#0b0d12"
+      }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0b0d12",
+          "image": "./assets/splash.png",
+          "imageWidth": 220,
+          "resizeMode": "contain"
+        }
+      ],
+      "react-native-game-services"
+    ],
+    "updates": {
+      "fallbackToCacheTimeout": 0,
+      "checkAutomatically": "ON_LOAD",
+      "url": "https://u.expo.dev/fd9d7be3-7502-469d-a7bc-8db6430b3b42"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "fd9d7be3-7502-469d-a7bc-8db6430b3b42"
+      }
+    }
+  }
+}

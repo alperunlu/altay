@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="index,follow">
+<title>Altay — Gizlilik Politikası</title>
+<style>
+  :root{--bg:#0b0d12;--card:#14110f;--gold:#d6ac5c;--bone:#efe2c4;--dim:#a99f89;--line:rgba(214,172,92,.28)}
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:radial-gradient(ellipse 80% 40% at 50% 0%,#2a2113 0%,var(--bg) 60%) no-repeat,var(--bg);
+    color:var(--bone);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  main{max-width:760px;margin:0 auto;padding:40px 20px 72px}
+  .lang{text-align:right;font-size:14px}
+  a{color:var(--gold)}
+  h1{font:900 clamp(30px,7vw,44px)/1.1 Georgia,"Times New Roman",serif;letter-spacing:.06em;margin:18px 0 4px;color:var(--gold)}
+  .sub{color:var(--dim);margin:0 0 28px}
+  h2{font:700 21px/1.3 Georgia,"Times New Roman",serif;color:var(--gold);margin:34px 0 8px;padding-top:18px;border-top:1px solid var(--line)}
+  p,li{color:#e3d7bb}
+  ul{padding-left:22px}li{margin:6px 0}
+  .tldr{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:0 0 8px}
+  .tldr p{margin:.3em 0}
+  code{background:#000;border-radius:4px;padding:1px 6px;font-size:.92em;color:#f3e6c6}
+  .note{color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<p class="lang"><a href="altay_en.html" hreflang="en">English</a></p>
+<h1>Altay</h1>
+<p class="sub">Gizlilik Politikası · Son güncelleme: 3 Ekim 2026</p>
+
+<div class="tldr">
+  <p><strong>Kısaca:</strong> Altay seni tanıyan hiçbir veri toplamaz. Hesap, reklam, analitik ve izleme yok. Tek kişilik oyun internet gerektirmez.</p>
+  <p>Aşağıda, oyunun hangi durumlarda ağa çıktığı ve bunun ne anlama geldiği açıkça yazılı.</p>
+</div>
+
+<h2>Geliştirici</h2>
+<p>Altay, Alper Ünlü tarafından geliştirilen bağımsız bir oyundur. Bu politika, iOS uygulaması ve onun çalıştığı cihazlar için geçerlidir.</p>
+
+<h2>Cihazında saklanan veriler</h2>
+<ul>
+  <li><strong>İlerleme:</strong> Kazandığın Şan ve aldığın kalıcı yükseltmeler, cihazındaki bir dosyada tutulur.</li>
+  <li><strong>Ayarlar:</strong> Seçtiğin dil, müzik ve ses tercihleri, öğreticiyi görüp görmediğin, hangi haritaları geçtiğin cihazın yerel depolamasında durur.</li>
+</ul>
+<p>Bunlar geliştiriciye veya herhangi bir sunucuya gönderilmez. Uygulamayı silersen hepsi silinir.</p>
+
+<h2>Game Center (isteğe bağlı)</h2>
+<p>Cihazında Game Center'a giriş yapmışsan, oyun bir koşu bittiğinde puanını ve zorluk seviyesini Apple'ın Game Center sıralama tablosuna gönderir. Bu veri <strong>Apple tarafından</strong> işlenir ve Apple'ın gizlilik politikasına tabidir; sıralamada Game Center takma adın diğer oyuncularca görülebilir. Geliştirici olarak ismin, e-postan veya başka bir kişisel bilgin bize ulaşmaz. Game Center'dan çıkış yapmak ya da iOS Ayarları'ndan kapatmak puan göndermeyi durdurur; oyun yine de oynanır.</p>
+
+<h2>Çok oyunculu mod (yalnızca sen başlatırsan)</h2>
+<p>Bir odaya katıldığında ya da oda kurduğunda, cihazlar WebRTC ile doğrudan birbirine bağlanır. Bunun için:</p>
+<ul>
+  <li><strong>Eşleşme sunucusu</strong> (PeerJS bulut hizmeti, <code>0.peerjs.com</code>): iki cihazın birbirini bulması için oda kodunu ve bağlantı bilgisini aktarır. Oyun verisi buradan geçmez.</li>
+  <li><strong>STUN sunucuları</strong> (<code>stun.l.google.com</code>, <code>global.stun.twilio.com</code>): cihazının internetten görünen IP adresini öğrenmek için kullanılır.</li>
+  <li><strong>Aktarma (TURN) sunucuları</strong> (PeerJS): doğrudan bağlantı kurulamazsa trafiği aktarır.</li>
+</ul>
+<p><strong>Önemli:</strong> Bu yöntemin doğası gereği, aynı odadaki oyuncular birbirinin IP adresini görebilir. Tanımadığın kişilerle oda kodu paylaşırken bunu bil. Cihazlar arasında yalnızca oyun durumu gider (kule ve düşman konumları, altın, can). İsim, e-posta, konum veya cihaz kimliği gönderilmez.</p>
+
+<h2>Güncellemeler</h2>
+<p>Uygulama, açılışta yeni bir oyun güncellemesi olup olmadığını Expo'nun güncelleme hizmeti (EAS Update) üzerinden kontrol eder. Bu istekte uygulama sürümü, platform ve güncelleme kimliği bulunur; her ağ isteğinde olduğu gibi IP adresin de sunucu tarafından görülür. Kişisel bilgi gönderilmez. Bu hizmet Expo'nun gizlilik politikasına tabidir (<a href="https://expo.dev/privacy">expo.dev/privacy</a>).</p>
+
+<h2>Paylaşım</h2>
+<p>Bir koşu bitince skorunu paylaşmayı seçebilirsin. Bu, cihazının kendi paylaşım penceresini açar; nereye göndereceğine sen karar verirsin. Uygulama kendiliğinden hiçbir yere bir şey göndermez.</p>
+
+<h2>Neleri yapmıyoruz</h2>
+<ul>
+  <li>Reklam göstermiyoruz, uygulama içi satın alma yok.</li>
+  <li>Analitik, çökme raporlama ya da izleme yazılımı kullanmıyoruz.</li>
+  <li>Verini satmıyor, üçüncü taraflarla pazarlama amacıyla paylaşmıyoruz.</li>
+  <li>Konum, kişi listesi, kamera veya mikrofona erişmiyoruz.</li>
+</ul>
+
+<h2>Çocuklar</h2>
+<p>Uygulama çocuklara yönelik pazarlanmıyor ve kimseden yaş bilgisi istemiyor; çünkü kimseyi tanıyan veri toplamıyor.</p>
+
+<h2>Haklarınız</h2>
+<p>Geliştiricinin elinde seni tanıyan bir veri bulunmadığından silinecek ya da düzeltilecek bir kaydın yoktur. Cihazındaki verileri uygulamayı silerek kaldırabilirsin; Game Center verilerin için Apple'ın araçlarını kullanabilirsin. Kişisel verilerin korunmasına ilişkin sorularını aşağıdaki bağlantıdan iletebilirsin.</p>
+
+<h2>Değişiklikler</h2>
+<p>Bu politika değişirse bu sayfa güncellenir ve üstteki tarih değişir.</p>
+
+<h2>İletişim</h2>
+<p>Sorular için: <a href="https://github.com/alperunlu/altay/issues">github.com/alperunlu/altay/issues</a></p>
+
+</main>
+</body>
+</html>

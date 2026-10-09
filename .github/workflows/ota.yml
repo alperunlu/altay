@@ -1,0 +1,92 @@
+# Publishes the game to installed TestFlight / App Store builds over the air
+# (EAS Update) whenever the game itself changes on main. No App Store review,
+# no new build. See store/ota.md.
+#
+# One-time setup: add an Expo access token as the repository secret EXPO_TOKEN
+# (GitHub: Settings > Secrets and variables > Actions > New repository secret;
+# token from https://expo.dev/accounts/alperunlu/settings/access-tokens).
+name: OTA update
+
+on:
+  push:
+    branches: [main]
+    # Only what OTA can actually carry. Native changes (app.json, package.json,
+    # a new native module) need a new build -- see the guard step below.
+    paths:
+      - index.html
+      - app/App.js
+      - app/assets/game/**
+  workflow_dispatch:
+    inputs:
+      message:
+        description: Update message
+        required: false
+        default: manual update
+
+concurrency:
+  group: ota
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check the EXPO_TOKEN secret exists
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::EXPO_TOKEN secret is not set (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      # runtimeVersion is the app.json "version". If this push also changed
+      # something native, an OTA to the build already on phones could crash it:
+      # stop and ask for a new build (and a version bump) instead.
+      - name: Guard against native changes
+        id: guard
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # A manual run is a deliberate decision: never second-guess it.
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "native=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only HEAD~1 HEAD -- app/app.json app/package.json app/package-lock.json app/eas.json || true)
+          if [ -n "$changed" ]; then
+            echo "::warning::Native-affecting files changed in this push:"; echo "$changed"
+            echo "native=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "native=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.native != 'true'
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install
+        if: steps.guard.outputs.native != 'true'
+        run: npm ci
+
+      # Root index.html is the source of truth; the app ships its copy.
+      - name: Sync game into the app
+        if: steps.guard.outputs.native != 'true'
+        run: npm run sync-game
+
+      - name: Publish update
+        if: steps.guard.outputs.native != 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          MSG: ${{ github.event.inputs.message || github.event.head_commit.message }}
+        run: npx --yes eas-cli@latest update --branch production --platform ios --message "${MSG%%$'\n'*}" --non-interactive

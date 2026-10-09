@@ -1,0 +1,62 @@
+# Builds the iOS app on EAS and sends it to TestFlight. Manual only: a build
+# costs build minutes and a new TestFlight build number, so it never runs on
+# its own. Needs the EXPO_TOKEN repository secret (same one the OTA workflow
+# uses). Run it from the Actions tab: "iOS build" > Run workflow.
+#
+# Submit: --auto-submit queues the TestFlight upload after the build. In a
+# non-interactive run that only works if EAS holds an App Store Connect API
+# key for this app (run `eas submit -p ios` once on a computer and accept
+# "generate an API key"). Without it the build still succeeds; the submit step
+# fails and `eas submit --platform ios --latest` finishes the job.
+name: iOS build
+
+on:
+  workflow_dispatch:
+    inputs:
+      submit:
+        description: Send the build to TestFlight when it finishes
+        type: boolean
+        default: true
+
+concurrency:
+  group: ios-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the EXPO_TOKEN secret exists
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::EXPO_TOKEN secret is not set."; exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - run: npm ci
+
+      # Root index.html is the source of truth; the app ships its copy.
+      - run: npm run sync-game
+
+      # --no-wait: EAS runs the build (and the queued submit) on its own
+      # servers; this job only has to start it.
+      - name: Start the build
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          SUBMIT: ${{ github.event.inputs.submit }}
+        run: |
+          flags="--platform ios --profile production --non-interactive --no-wait"
+          if [ "$SUBMIT" = "true" ]; then flags="$flags --auto-submit"; fi
+          npx --yes eas-cli@latest build $flags
