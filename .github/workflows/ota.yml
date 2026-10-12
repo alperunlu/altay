@@ -1,6 +1,7 @@
 # Publishes the game to installed TestFlight / App Store builds over the air
-# (EAS Update) whenever the game itself changes on main. No App Store review,
-# no new build. See store/ota.md.
+# (EAS Update). Only the `ota` branch publishes: work lands on main as usual,
+# and an update goes out when main (or a commit) is merged into `ota`.
+# No App Store review, no new build.
 #
 # One-time setup: add an Expo access token as the repository secret EXPO_TOKEN
 # (GitHub: Settings > Secrets and variables > Actions > New repository secret;
@@ -9,7 +10,7 @@ name: OTA update
 
 on:
   push:
-    branches: [main]
+    branches: [ota]
     # Only what OTA can actually carry. Native changes (app.json, package.json,
     # a new native module) need a new build -- see the guard step below.
     paths:
@@ -36,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Check the EXPO_TOKEN secret exists
         env:
@@ -55,12 +56,16 @@ jobs:
         working-directory: .
         env:
           EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
         run: |
           # A manual run is a deliberate decision: never second-guess it.
           if [ "$EVENT" = "workflow_dispatch" ]; then
             echo "native=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          changed=$(git diff --name-only HEAD~1 HEAD -- app/app.json app/package.json app/package-lock.json app/eas.json || true)
+          # Everything this push brought in (a merge can carry many commits), not just the last commit.
+          base="$BEFORE"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=HEAD~1; fi
+          changed=$(git diff --name-only "$base" HEAD -- app/app.json app/package.json app/package-lock.json app/eas.json || true)
           if [ -n "$changed" ]; then
             echo "::warning::Native-affecting files changed in this push:"; echo "$changed"
             echo "native=true" >> "$GITHUB_OUTPUT"
