@@ -7321,6 +7321,13 @@ function fitText(x, s, maxW, size, font, weight) {
   }
   return s.slice(0, lo).trimEnd() + '…';
 }
+/* the font size at which s fits in maxW (never above `size`): headlines and button labels in
+   narrow portrait screens shrink to fit instead of running off the edges */
+function fitSize(x, s, maxW, size, weight, font) {
+  x.font = `${weight || 600} ${size}px ${font || '"Cinzel",Georgia,serif'}`;
+  const w = x.measureText(s).width;
+  return w <= maxW ? size : Math.max(8, size * maxW / w);
+}
 function btn(x, r, label, sub, active, disabled, icon) {
   panel(x, r.x, r.y, r.w, r.h, { hi: active, gold: active, r: 7 });
   if (icon) {
@@ -8217,13 +8224,17 @@ function drawEndScreen(x, W, H, S) {
   let extraRow = Native.on ? Math.max(TOUCH_MIN, 40 * S) + 10 * S : 0;
   extraRow += Math.max(TOUCH_MIN, 40 * S) + 10 * S;   // map / menu row, or leave-room in co-op
   const cy = H / 2 - extraRow / 2;
-  txt(x, won ? i18n('the_gate_holds') : i18n('the_gate_has_fallen'), W / 2, cy - 60 * S, 40 * S, won ? '#ffd76a' : '#ff6a4a', 'center', 900);
-  txt(x, won ? i18n('all_total_waves_repelled', { total: WAVES.length }) : i18n('you_fell_on_wave_n', { n: (WAVES[G.waveIdx] || { n: 30 }).n }), W / 2, cy - 18 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
-  txt(x, i18n('killed_leaked_score', { killed: G.killed, leaked: G.leaked, score: G.score[NET.me] | 0 }), W / 2, cy + 8 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
+  const maxTW = W * 0.92;
+  const t1 = won ? i18n('the_gate_holds') : i18n('the_gate_has_fallen');
+  txt(x, t1, W / 2, cy - 60 * S, fitSize(x, t1, maxTW, 40 * S, 900), won ? '#ffd76a' : '#ff6a4a', 'center', 900);
+  const t2 = won ? i18n('all_total_waves_repelled', { total: WAVES.length }) : i18n('you_fell_on_wave_n', { n: (WAVES[G.waveIdx] || { n: 30 }).n });
+  txt(x, t2, W / 2, cy - 18 * S, fitSize(x, t2, maxTW, 14 * S, 600, 'system-ui'), '#d8cdb4', 'center', 600, 'system-ui');
+  const t3 = i18n('killed_leaked_score', { killed: G.killed, leaked: G.leaked, score: G.score[NET.me] | 0 });
+  txt(x, t3, W / 2, cy + 8 * S, fitSize(x, t3, maxTW, 12 * S, 600, 'system-ui'), '#9a917f', 'center', 600, 'system-ui');
   const ebw = Math.max(180, 180 * S), ebh = Math.max(TOUCH_MIN + 4, 44 * S);
   const r = addRect('again', W / 2 - ebw / 2, cy + 34 * S, ebw, ebh, () => issue({ k: 'restart' }));
   panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: true, r: 8 });
-  txt(x, i18n('retry'), r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#ffe08a', 'center', 800);
+  txt(x, i18n('retry'), r.x + r.w / 2, r.y + r.h / 2, fitSize(x, i18n('retry'), r.w - 14, 15 * S, 800), '#ffe08a', 'center', 800);
   /* The run has to end somewhere other than this same map. Without these the
      only exits from a finished run were "again" and the browser. Hidden in
      co-op, where leaving is not one player's call -- leaveRun says so. */
@@ -8231,13 +8242,13 @@ function drawEndScreen(x, W, H, S) {
     const hy = r.y + ebh + 10 * S, hh2 = Math.max(TOUCH_MIN, 40 * S);
     const mn = addRect('endMenu', W / 2 - ebw / 2, hy, ebw, hh2, () => leaveRun('lobby'));
     panel(x, mn.x, mn.y, mn.w, mn.h, { r: 8 });
-    txt(x, i18n('main_menu'), mn.x + mn.w / 2, mn.y + mn.h / 2, 11.5 * S, '#cfd6e0', 'center', 800);
+    txt(x, i18n('main_menu'), mn.x + mn.w / 2, mn.y + mn.h / 2, fitSize(x, i18n('main_menu'), mn.w - 14, 11.5 * S, 800), '#cfd6e0', 'center', 800);
   } else {
     // co-op had no way out of a room at all short of closing the app
     const hy = r.y + ebh + 10 * S, hh2 = Math.max(TOUCH_MIN, 40 * S);
     const lr = addRect('endLeave', W / 2 - ebw / 2, hy, ebw, hh2, () => leaveRoom());
     panel(x, lr.x, lr.y, lr.w, lr.h, { r: 8 });
-    txt(x, i18n('leave_room'), lr.x + lr.w / 2, lr.y + lr.h / 2, 11.5 * S, '#cfd6e0', 'center', 800);
+    txt(x, i18n('leave_room'), lr.x + lr.w / 2, lr.y + lr.h / 2, fitSize(x, i18n('leave_room'), lr.w - 14, 11.5 * S, 800), '#cfd6e0', 'center', 800);
   }
   /* Leaderboard and share, only inside the app shell -- in a browser there is
      nothing behind them, so they are not drawn at all rather than drawn dead.
@@ -8251,11 +8262,11 @@ function drawEndScreen(x, W, H, S) {
     const lb = addRect('gcBoard', W / 2 - ebw / 2, sy, sbw, sbh,
       () => Native.post('leaderboard', payload));
     panel(x, lb.x, lb.y, lb.w, lb.h, { r: 8 });
-    txt(x, i18n('leaderboard'), lb.x + lb.w / 2, lb.y + lb.h / 2, 12 * S, '#cfd6e0', 'center', 800);
+    txt(x, i18n('leaderboard'), lb.x + lb.w / 2, lb.y + lb.h / 2, fitSize(x, i18n('leaderboard'), lb.w - 14, 12 * S, 800), '#cfd6e0', 'center', 800);
     const sh = addRect('gcShare', W / 2 - ebw / 2 + sbw + 8 * S, sy, sbw, sbh,
       () => Native.post('share', payload));
     panel(x, sh.x, sh.y, sh.w, sh.h, { r: 8 });
-    txt(x, i18n('share'), sh.x + sh.w / 2, sh.y + sh.h / 2, 12 * S, '#cfd6e0', 'center', 800);
+    txt(x, i18n('share'), sh.x + sh.w / 2, sh.y + sh.h / 2, fitSize(x, i18n('share'), sh.w - 14, 12 * S, 800), '#cfd6e0', 'center', 800);
   }
   x.restore();
 }
@@ -8269,21 +8280,21 @@ function drawDuelEnd(x, W, H, S) {
     : d.winner === -2 ? i18n('both_gates_fell_at_the_same_time')
     : i18n(won ? 'gate_fell_won' : 'gate_fell_lost', { n: G.waveIdx + 1 });
   const cy = H / 2 - 30 * S;
-  txt(x, title, W / 2, cy - 50 * S, 40 * S, col, 'center', 900);
-  txt(x, sub, W / 2, cy - 10 * S, 14 * S, '#d8cdb4', 'center', 600, 'system-ui');
-  txt(x, i18n('lives_you_mine_opponent_theirs_send_income_i', { mine: Math.max(0, d.lives[me]), theirs: Math.max(0, d.lives[1 - me]), income: d.income[me] }),
-    W / 2, cy + 14 * S, 12 * S, '#9a917f', 'center', 600, 'system-ui');
+  txt(x, title, W / 2, cy - 50 * S, fitSize(x, title, W * 0.92, 40 * S, 900), col, 'center', 900);
+  txt(x, sub, W / 2, cy - 10 * S, fitSize(x, sub, W * 0.92, 14 * S, 600, 'system-ui'), '#d8cdb4', 'center', 600, 'system-ui');
+  const t3 = i18n('lives_you_mine_opponent_theirs_send_income_i', { mine: Math.max(0, d.lives[me]), theirs: Math.max(0, d.lives[1 - me]), income: d.income[me] });
+  txt(x, t3, W / 2, cy + 14 * S, fitSize(x, t3, W * 0.92, 12 * S, 600, 'system-ui'), '#9a917f', 'center', 600, 'system-ui');
   const ebw = Math.max(200, 200 * S), ebh = Math.max(TOUCH_MIN + 4, 44 * S);
   let y = cy + 38 * S;
   if (d.winner !== -3 && !UI.duelForfeit && NET.active && G.players > 1) {
     const r = addRect('again', W / 2 - ebw / 2, y, ebw, ebh, () => issue({ k: 'restart' }));
     panel(x, r.x, r.y, r.w, r.h, { gold: true, hi: true, r: 8 });
-    txt(x, i18n('rematch'), r.x + r.w / 2, r.y + r.h / 2, 15 * S, '#ffe08a', 'center', 800);
+    txt(x, i18n('rematch'), r.x + r.w / 2, r.y + r.h / 2, fitSize(x, i18n('rematch'), r.w - 14, 15 * S, 800), '#ffe08a', 'center', 800);
     y += ebh + 10 * S;
   }
   const lr = addRect('endLeave', W / 2 - ebw / 2, y, ebw, Math.max(TOUCH_MIN, 40 * S), () => leaveRoom());
   panel(x, lr.x, lr.y, lr.w, lr.h, { r: 8 });
-  txt(x, i18n('leave_room'), lr.x + lr.w / 2, lr.y + lr.h / 2, 12 * S, '#cfd6e0', 'center', 800);
+  txt(x, i18n('leave_room'), lr.x + lr.w / 2, lr.y + lr.h / 2, fitSize(x, i18n('leave_room'), lr.w - 14, 12 * S, 800), '#cfd6e0', 'center', 800);
 }
 /* Out of an online room and back to the main menu, on a fresh solo board. */
 function leaveRoom() {
