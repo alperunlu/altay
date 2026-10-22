@@ -259,6 +259,7 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
     <div data-i18n="sound_game_and_language" class="kicker">Ses, oyun ve dil</div>
     <button id="mMusic">Müzik: açık</button>
     <button id="mSfx">Sesler: açık</button>
+    <button id="mGC" style="display:none">Game Center: açık</button>
     <button id="mAuto">Otomatik dalga: kapalı</button>
     <button id="mEnd">Sonsuz mod: kapalı</button>
     <div class="langPick" id="setLang"></div>
@@ -665,6 +666,7 @@ const STRINGS = {
     "apply": "Apply",
     "not_in_a_shared_game_leave_the_room_first": "Not in a shared game — leave the room first",
     "music_state": "Music: {state}",
+    "game_center_state": "Game Center: {state}",
     "on": "on",
     "off": "off",
     "sounds_state": "Sounds: {state}",
@@ -1073,6 +1075,7 @@ const STRINGS = {
     "apply": "Uygula",
     "not_in_a_shared_game_leave_the_room_first": "Ortak oyunda değiştirilemez — önce odadan çık",
     "music_state": "Müzik: {state}",
+    "game_center_state": "Game Center: {state}",
     "on": "açık",
     "off": "kapalı",
     "sounds_state": "Sesler: {state}",
@@ -4255,7 +4258,12 @@ const Native = {
      events a minute and buzzing on all of them is worse than silence. Only
      moments the player is meant to feel get one. */
   haptic(kind) { this.post('haptic', kind); },
-  score(payload) { this.post('score', payload); },
+  /* Game Center is the player's choice: this switch (Settings > Game Center) stops the page from
+     sending scores and hides the leaderboard button. Signing the player in is the shell's job and
+     only happens when one of those is first used. The real account lives in iOS Settings. */
+  gcOn() { try { return localStorage.getItem('altay_gc_v1') !== '0'; } catch (e) { return true; } },
+  setGc(on) { try { localStorage.setItem('altay_gc_v1', on ? '1' : '0'); } catch (e) { } },
+  score(payload) { if (this.gcOn()) this.post('score', payload); },
   /* The meta profile is the only thing that must survive being closed, and
      localStorage against a file:// origin is not something to trust a
      player's progression to. The shell hands the stored copy in through
@@ -8257,13 +8265,16 @@ function drawEndScreen(x, W, H, S) {
   if (Native.on) {
     const payload = { lang: LANG, won, wave: won ? WAVES.length : G.waveIdx + 1,
                       difficulty: G.difficulty, score: G.score[NET.me] | 0 };
-    const sbw = (ebw - 8 * S) / 2, sbh = Math.max(TOUCH_MIN, 40 * S);
+    const gc = Native.gcOn();
+    const sbw = gc ? (ebw - 8 * S) / 2 : ebw, sbh = Math.max(TOUCH_MIN, 40 * S);
     const sy = r.y + ebh + 10 * S + sbh + 10 * S;   // below the map/menu (or leave-room) row
-    const lb = addRect('gcBoard', W / 2 - ebw / 2, sy, sbw, sbh,
-      () => Native.post('leaderboard', payload));
-    panel(x, lb.x, lb.y, lb.w, lb.h, { r: 8 });
-    txt(x, i18n('leaderboard'), lb.x + lb.w / 2, lb.y + lb.h / 2, fitSize(x, i18n('leaderboard'), lb.w - 14, 12 * S, 800), '#cfd6e0', 'center', 800);
-    const sh = addRect('gcShare', W / 2 - ebw / 2 + sbw + 8 * S, sy, sbw, sbh,
+    if (gc) {
+      const lb = addRect('gcBoard', W / 2 - ebw / 2, sy, sbw, sbh,
+        () => Native.post('leaderboard', payload));
+      panel(x, lb.x, lb.y, lb.w, lb.h, { r: 8 });
+      txt(x, i18n('leaderboard'), lb.x + lb.w / 2, lb.y + lb.h / 2, fitSize(x, i18n('leaderboard'), lb.w - 14, 12 * S, 800), '#cfd6e0', 'center', 800);
+    }
+    const sh = addRect('gcShare', gc ? W / 2 - ebw / 2 + sbw + 8 * S : W / 2 - ebw / 2, sy, sbw, sbh,
       () => Native.post('share', payload));
     panel(x, sh.x, sh.y, sh.w, sh.h, { r: 8 });
     txt(x, i18n('share'), sh.x + sh.w / 2, sh.y + sh.h / 2, fitSize(x, i18n('share'), sh.w - 14, 12 * S, 800), '#cfd6e0', 'center', 800);
@@ -10008,6 +10019,8 @@ function resetLangPickers() { langPickers.forEach(p => p.refresh()); }
 function syncMenu() {
   $('mMusic').textContent = i18n('music_state', { state: Audio2.musicOn ? i18n('on') : i18n('off') });
   $('mSfx').textContent = i18n('sounds_state', { state: Audio2.enabled ? i18n('on') : i18n('off') });
+  $('mGC').style.display = Native.on ? '' : 'none';   // there is no Game Center in a browser
+  $('mGC').textContent = i18n('game_center_state', { state: Native.gcOn() ? i18n('on') : i18n('off') });
   $('mAuto').textContent = i18n('auto_wave_state', { state: G.autoStart ? i18n('on') : i18n('off') });
   $('mEnd').textContent = i18n('endless_state', { state: G.endless ? i18n('on') : i18n('off') });
   // online, the run is not one player's to reset or reconfigure -- the way
@@ -10194,6 +10207,7 @@ function wireShell() {
   $('mClose').onclick = closeMenu;
   $('mMusic').onclick = () => { Audio2.setMusic(!Audio2.musicOn); syncMenu(); };
   $('mSfx').onclick = () => { Audio2.setSfx(!Audio2.enabled); syncMenu(); };
+  $('mGC').onclick = () => { Native.setGc(!Native.gcOn()); syncMenu(); };
   $('mAuto').onclick = () => { G.autoStart = !G.autoStart; syncMenu(); };
   $('mEnd').onclick = () => { G.endless = !G.endless; syncMenu(); };
   $('mRestart').onclick = () => { issue({ k: 'restart' }); closeMenu(); };

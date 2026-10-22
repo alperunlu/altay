@@ -162,17 +162,25 @@ export default function App() {
     });
   }, []);
 
-  /* Authenticate against Game Center once, quietly. A player who is not
-     signed in, or who declines, simply gets no leaderboard -- it must never
-     block or interrupt getting into the game. */
-  useEffect(() => {
-    (async () => {
-      try {
-        GameServices.initialize();
-        await GameServices.signIn();
-        gcReady.current = await GameServices.isAuthenticated();
-      } catch (e) { gcReady.current = false; }
-    })();
+  /* Game Center sign-in is lazy: nothing is asked of the player at launch.
+     It happens the first time a score is submitted or the leaderboard is
+     opened, and only if the player has Game Center switched on in the game's
+     settings (the page does not send either message when it is off). A player
+     who is not signed in, or who declines, simply gets no leaderboard -- it
+     must never block or interrupt the game. A failed sign-in is not retried
+     on every score, only when the player explicitly opens the leaderboard. */
+  const gcTried = useRef(false);
+  const gcInit = useRef(false);
+  const ensureGC = useCallback(async (explicit) => {
+    if (gcReady.current) return true;
+    if (gcTried.current && !explicit) return false;
+    gcTried.current = true;
+    try {
+      if (!gcInit.current) { GameServices.initialize(); gcInit.current = true; }
+      await GameServices.signIn();
+      gcReady.current = await GameServices.isAuthenticated();
+    } catch (e) { gcReady.current = false; }
+    return gcReady.current;
   }, []);
 
   useEffect(() => {
@@ -242,15 +250,15 @@ export default function App() {
            screen has a button for the leaderboard and one for sharing. */
         const p = msg.payload || {};
         const board = LEADERBOARDS[p.difficulty] || LEADERBOARDS.normal;
-        if (gcReady.current) {
-          GameServices.submitScore(board, Math.max(0, p.score | 0)).catch(() => {});
-        }
+        ensureGC(false).then((ok) => {
+          if (ok) GameServices.submitScore(board, Math.max(0, p.score | 0)).catch(() => {});
+        });
         break;
       }
       case 'leaderboard': {
         const p = msg.payload || {};
         const board = LEADERBOARDS[p.difficulty] || LEADERBOARDS.normal;
-        if (gcReady.current) GameServices.showLeaderboard(board).catch(() => {});
+        ensureGC(true).then((ok) => { if (ok) GameServices.showLeaderboard(board).catch(() => {}); });
         break;
       }
       case 'share': {
@@ -268,7 +276,7 @@ export default function App() {
       default:
         break;
     }
-  }, []);
+  }, [ensureGC]);
 
   const onLoadEnd = useCallback(() => {
     // The page bakes its art before it is usable, so hold the splash until the
