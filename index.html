@@ -173,6 +173,7 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
     .langPick .lpName{min-height:40px}
     #verLine{margin-top:6px!important}
   }
+  @media (max-height:520px){ .btnPair{display:flex;gap:8px} .btnPair button{flex:1} }
   @media (max-height:380px){
     .kicker{display:none}
     button{padding:8px 12px}
@@ -205,7 +206,10 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
     </div>
     <div id="lobbyMsg"></div>
     <button data-i18n="how_to_play" class="ghost" id="btnHelp">Nasıl oynanır?</button>
-    <button data-i18n="permanent_upgrades" class="ghost" id="btnMeta">Kalıcı Yükseltmeler</button>
+    <div class="btnPair">
+      <button data-i18n="permanent_upgrades" class="ghost" id="btnMeta">Kalıcı Yükseltmeler</button>
+      <button data-i18n="leaderboard_title" class="ghost" id="btnBoard" style="display:none">Sıralama</button>
+    </div>
     <!-- Labelled in the language it switches TO, so someone who cannot read
          the current one can still find it. -->
     <div class="langPick" id="lobbyLang"></div>
@@ -230,6 +234,17 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
     <div id="setupRecord" style="margin:8px 0 22px;font-size:12px;opacity:.72;min-height:16px"></div>
     <button data-i18n="continue_2" class="primary" id="setupGo">Devam Et</button>
     <button data-i18n="back" class="ghost" id="setupBack">Geri</button>
+  </div>
+</div>
+
+<div id="board" class="overlay hidden">
+  <div class="card">
+    <h1 data-i18n="leaderboard_title" style="font-size:22px">Sıralama</h1>
+    <div data-i18n="difficulty" class="kicker" style="margin-bottom:10px">Zorluk</div>
+    <button id="boardEasy" data-diff="easy">Kolay</button>
+    <button id="boardNormal" data-diff="normal" class="primary">Normal</button>
+    <button id="boardHard" data-diff="hard">Zor</button>
+    <button data-i18n="close_2" class="ghost" id="boardClose">Kapat</button>
   </div>
 </div>
 
@@ -502,6 +517,7 @@ const STRINGS = {
     "main_menu": "MAIN MENU",
     "leave_room": "LEAVE ROOM",
     "leaderboard": "LEADERBOARD",
+    "leaderboard_title": "Leaderboard",
     "share": "SHARE",
     "lost_connection_to_your_opponent": "Lost connection to your opponent.",
     "your_opponent_left_the_game": "Your opponent left the game.",
@@ -906,6 +922,7 @@ const STRINGS = {
     "main_menu": "ANA MENÜ",
     "leave_room": "ODADAN ÇIK",
     "leaderboard": "SIRALAMA",
+    "leaderboard_title": "Sıralama",
     "share": "PAYLAŞ",
     "lost_connection_to_your_opponent": "Rakibin bağlantısı koptu.",
     "your_opponent_left_the_game": "Rakip oyundan ayrıldı.",
@@ -9947,6 +9964,7 @@ function refreshLobbyProgress() {
   const vl = $('verLine'); if (!vl) return;
   const pr = campaignProgress();
   vl.textContent = i18n('maps_cleared_version', { cleared: pr.cleared, total: pr.total });
+  $('btnBoard').style.display = Native.on && Native.gcOn() ? '' : 'none';   // Game Center exists only in the app, and only while the player has it on
 }
 function leaveRun(target) {
   if (NET.active) { UI.toast(i18n('you_can_t_leave_a_shared_game_close_the_room'), '#ff9a8a'); return; }
@@ -10152,6 +10170,21 @@ function wireShell() {
   mapSelect.onchange = () => { G.mapSeed = Number(mapSelect.value); refreshSetupRecord(); };
   $('btnMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
   $('metaClose').onclick = () => $('meta').classList.add('hidden');
+  /* Leaderboard picker: one table per difficulty, so the player says which one. The last choice is remembered. */
+  const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
+  const boardLast = () => { try { return localStorage.getItem('altay_board_v1') || 'normal'; } catch (e) { return 'normal'; } };
+  const paintBoard = () => {
+    $('boardEasy').textContent = i18n('easy'); $('boardNormal').textContent = cap(i18n('normal')); $('boardHard').textContent = i18n('hard');
+    for (const b of ['boardEasy', 'boardNormal', 'boardHard']) $(b).classList.toggle('primary', $(b).dataset.diff === boardLast());
+  };
+  $('btnBoard').onclick = () => { paintBoard(); $('board').classList.remove('hidden'); };
+  for (const b of ['boardEasy', 'boardNormal', 'boardHard']) $(b).onclick = () => {
+    const d = $(b).dataset.diff;
+    try { localStorage.setItem('altay_board_v1', d); } catch (e) { }
+    paintBoard();
+    Native.post('leaderboard', { difficulty: d, lang: LANG });
+  };
+  $('boardClose').onclick = () => $('board').classList.add('hidden');
   $('btnSolo').onclick = () => { G.mode = 'std'; openSetup('solo'); };
   $('btnHost').onclick = () => { G.mode = 'std'; $('joinRow').classList.add('hidden'); openSetup('host'); };
   // A duel has nothing to set up (its own mirrored board, normal curve), so
