@@ -260,7 +260,7 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
 
 <div id="menu" class="overlay hidden">
   <div class="card menuCard">
-    <h1 data-i18n="paused">Duraklat</h1>
+    <h1 data-i18n="paused" id="menuTitle">Duraklat</h1>
     <button data-i18n="back_to_battle" class="primary" id="mClose">Savaşa dön</button>
     <button data-i18n="settings" id="mSettings">Ayarlar</button>
     <button data-i18n="how_to_play" id="mHelp">Nasıl oynanır?</button>
@@ -271,7 +271,7 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
   <!-- Settings live one level down so the pause menu stays short. -->
   <div class="card menuCard" id="settingsCard">
     <h1 data-i18n="settings">Ayarlar</h1>
-    <div data-i18n="sound_game_and_language" class="kicker">Ses, oyun ve dil</div>
+    <div data-i18n="sound_game_and_language" class="kicker" id="setKicker">Ses, oyun ve dil</div>
     <button id="mMusic">Müzik: açık</button>
     <button id="mSfx">Sesler: açık</button>
     <button id="mGC" style="display:none">Game Center: açık</button>
@@ -335,6 +335,10 @@ const STRINGS = {
     "back_to_battle": "Back to battle",
     "settings": "Settings",
     "restart": "Restart",
+    "tap_again_to_confirm": "Tap again to confirm",
+    "menu_title": "Menu",
+    "sound_language_gc": "Sound, language and Game Center",
+    "sound_and_language": "Sound and language",
     "sound_game_and_language": "Sound, game and language",
     "how_to_play_2": "How to play",
     "replay_the_tutorial": "Replay the tutorial",
@@ -740,6 +744,10 @@ const STRINGS = {
     "back_to_battle": "Savaşa dön",
     "settings": "Ayarlar",
     "restart": "Baştan başla",
+    "tap_again_to_confirm": "Emin misin? Tekrar dokun",
+    "menu_title": "Menü",
+    "sound_language_gc": "Ses, dil ve Game Center",
+    "sound_and_language": "Ses ve dil",
     "sound_game_and_language": "Ses, oyun ve dil",
     "how_to_play_2": "Nasıl oynanır",
     "replay_the_tutorial": "Öğreticiyi yeniden oyna",
@@ -4282,7 +4290,7 @@ const Native = {
   /* Game Center is the player's choice: this switch (Settings > Game Center) stops the page from
      sending scores and hides the leaderboard button. Signing the player in is the shell's job and
      only happens when one of those is first used. The real account lives in iOS Settings. */
-  gcOn() { try { return localStorage.getItem('altay_gc_v1') !== '0'; } catch (e) { return true; } },
+  gcOn() { try { return localStorage.getItem('altay_gc_v1') === '1'; } catch (e) { return false; } },   // off until the player turns it on
   setGc(on) { try { localStorage.setItem('altay_gc_v1', on ? '1' : '0'); } catch (e) { } },
   score(payload) { if (this.gcOn()) this.post('score', payload); },
   /* The meta profile is the only thing that must survive being closed, and
@@ -9432,8 +9440,10 @@ function processEvents(list) {
       // awards its OWN local META currency independently here rather than
       // this being simulation state that needs syncing.
       case 'won': Audio2.play('victory'); UI.toast(i18n('glory_gain', { n: awardMetaCurrency(true) }), '#ffd76a');
+        try { localStorage.setItem('altay_board_v1', G.difficulty); } catch (e) { }
         Native.haptic('success'); Native.score({ won: true, wave: WAVES.length, difficulty: G.difficulty, map: G.mapSeed, score: G.score[NET.me] | 0 }); break;
       case 'lost': Audio2.play('defeat'); UI.toast(i18n('glory_gain', { n: awardMetaCurrency(false) }), '#ffd76a');
+        try { localStorage.setItem('altay_board_v1', G.difficulty); } catch (e) { }
         Native.haptic('error'); Native.score({ won: false, wave: G.waveIdx + 1, difficulty: G.difficulty, map: G.mapSeed, score: G.score[NET.me] | 0 }); break;
       case 'sfx': Audio2.play(e.name, 0.7, panOf(e.x)); break;
     }
@@ -10007,8 +10017,8 @@ function autoPauseOnLeave() {
 document.addEventListener('visibilitychange', () => { if (document.hidden) autoPauseOnLeave(); });
 window.addEventListener('pagehide', autoPauseOnLeave);
 window.addEventListener('altay:background', autoPauseOnLeave);   // sent by the app shell on AppState 'inactive'/'background'
-function openMenu() { fromLobby = false; $('menu').classList.remove('settings'); $('menu').classList.remove('hidden'); resetLangPickers(); syncMenu(); }
-function closeMenu() { $('menu').classList.add('hidden'); resetLangPickers(); }
+function openMenu() { disarmBtn(); fromLobby = false; $('menu').classList.remove('settings'); $('menu').classList.remove('hidden'); resetLangPickers(); syncMenu(); }
+function closeMenu() { disarmBtn(); $('menu').classList.add('hidden'); resetLangPickers(); }
 /* Language picker: "<  English  >". The arrows only choose; nothing changes
    until Apply, because applying reloads the page (names are baked at load)
    and that ends a run in progress. Inside a run Apply says so on its face,
@@ -10045,6 +10055,15 @@ function mountLangPicker(el, inRun) {
 }
 function resetLangPickers() { langPickers.forEach(p => p.refresh()); }
 let fromLobby = false;
+/* Two-step confirm for the buttons that throw a solo run away: the first tap
+   rewrites the label, a second tap within 3 s does it, anything else cancels. */
+let armedBtn = null, armedTimer = 0;
+function disarmBtn() { clearTimeout(armedTimer); armedBtn = null; }
+function confirmTap(id, fn) {
+  if (armedBtn === id) { disarmBtn(); fn(); return; }
+  disarmBtn(); armedBtn = id; $(id).textContent = i18n('tap_again_to_confirm');
+  armedTimer = setTimeout(() => { armedBtn = null; syncMenu(); }, 3000);
+}
 function syncMenu() {
   $('mMusic').textContent = i18n('music_state', { state: Audio2.musicOn ? i18n('on') : i18n('off') });
   $('mSfx').textContent = i18n('sounds_state', { state: Audio2.enabled ? i18n('on') : i18n('off') });
@@ -10054,8 +10073,12 @@ function syncMenu() {
   $('mEnd').textContent = i18n('endless_state', { state: G.endless ? i18n('on') : i18n('off') });
   // online, the run is not one player's to reset or reconfigure -- the way
   // out is leaving the room (which concedes a duel)
-  $('mSetup').textContent = NET.active ? (G.duel ? i18n('leave_room_forfeit') : i18n('leave_room_2')) : i18n('back_to_main_menu');
+  if (armedBtn !== 'mSetup') $('mSetup').textContent = NET.active ? (G.duel ? i18n('leave_room_forfeit') : i18n('leave_room_2')) : i18n('back_to_main_menu');
   for (const id of ['mRestart', 'mAuto', 'mEnd']) $(id).style.display = (G.duel || fromLobby) ? 'none' : '';
+  // the sim only stands still in a solo run; in a room the title would be a lie
+  $('menuTitle').textContent = (NET.active || G.duel) ? i18n('menu_title') : i18n('paused');
+  $('setKicker').textContent = fromLobby ? i18n(Native.on ? 'sound_language_gc' : 'sound_and_language') : i18n('sound_game_and_language');
+  if (armedBtn !== 'mRestart') $('mRestart').textContent = i18n('restart');
 }
 function randomCode() { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += c[(Math.random() * c.length) | 0]; return s; }
 function renderMetaTree() {
@@ -10252,8 +10275,9 @@ function wireShell() {
   $('mGC').onclick = () => { Native.setGc(!Native.gcOn()); syncMenu(); };
   $('mAuto').onclick = () => { G.autoStart = !G.autoStart; syncMenu(); };
   $('mEnd').onclick = () => { G.endless = !G.endless; syncMenu(); };
-  $('mRestart').onclick = () => { issue({ k: 'restart' }); closeMenu(); };
-  $('mSetup').onclick = () => NET.active ? leaveRoom() : leaveRun('lobby');
+  $('mRestart').onclick = () => confirmTap('mRestart', () => { issue({ k: 'restart' }); closeMenu(); syncMenu(); });
+  // a shared room already says so on the button ("you lose the match"); solo asks once more
+  $('mSetup').onclick = () => NET.active ? leaveRoom() : confirmTap('mSetup', () => { leaveRun('lobby'); syncMenu(); });
   $('mSettings').onclick = () => { $('menu').classList.add('settings'); syncMenu(); };
   $('mSettingsBack').onclick = () => {
     resetLangPickers(); $('menu').classList.remove('settings');
