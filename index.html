@@ -1417,6 +1417,18 @@ const Audio2 = {
     window.addEventListener('pageshow', () => this.resume());
     window.addEventListener('focus', () => this.resume());
     window.addEventListener('altay:background', () => { this._wasHidden = true; });
+    /* Game Center trouble reported by the app shell: a small page-level note, since the lobby has no canvas toast. */
+    window.addEventListener('altay:gc', (e) => {
+      try {
+        let d = document.getElementById('gcNote');
+        if (!d) { d = document.createElement('div'); d.id = 'gcNote';
+          d.style.cssText = 'position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:86vw;padding:10px 14px;border-radius:10px;background:rgba(20,16,12,.94);border:1px solid #ff9a8a;color:#ffd9d0;font:13px system-ui,sans-serif;z-index:99999;text-align:center';
+          document.body.appendChild(d); }
+        d.textContent = 'Game Center: ' + String((e && e.detail) || '');
+        d.style.display = 'block';
+        clearTimeout(d._t); d._t = setTimeout(() => { d.style.display = 'none'; }, 5000);
+      } catch (x) { }
+    });
     window.addEventListener('altay:resume', () => { this.resume(); setTimeout(() => this.resume(), 300); });   // app shell, AppState 'active'
     const gesture = () => {
       if (!this.ctx) return;

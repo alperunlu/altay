@@ -171,17 +171,31 @@ export default function App() {
      on every score, only when the player explicitly opens the leaderboard. */
   const gcTried = useRef(false);
   const gcInit = useRef(false);
+  const notifyPage = useCallback((text) => {
+    const msg = JSON.stringify(String(text || '').slice(0, 160));
+    webRef.current?.injectJavaScript('window.dispatchEvent(new CustomEvent("altay:gc",{detail:' + msg + '}));true;');
+  }, []);
   const ensureGC = useCallback(async (explicit) => {
     if (gcReady.current) return true;
     if (gcTried.current && !explicit) return false;
     gcTried.current = true;
     try {
       if (!gcInit.current) { GameServices.initialize(); gcInit.current = true; }
-      await GameServices.signIn();
+      // an account Game Center already knows needs no sign-in round trip
+      if (await GameServices.isAuthenticated()) { gcReady.current = true; return true; }
+      // signIn() only settles once the sign-in sheet is done; a player who
+      // closes it leaves the promise hanging, so never wait on it forever
+      await Promise.race([
+        GameServices.signIn(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000)),
+      ]);
       gcReady.current = await GameServices.isAuthenticated();
-    } catch (e) { gcReady.current = false; }
+    } catch (e) {
+      gcReady.current = false;
+      if (explicit) notifyPage(e && e.message === 'timeout' ? 'Game Center sign-in did not finish' : (e && e.message) || 'Game Center sign-in failed');
+    }
     return gcReady.current;
-  }, []);
+  }, [notifyPage]);
 
   useEffect(() => {
     let alive = true;
@@ -258,7 +272,9 @@ export default function App() {
       case 'leaderboard': {
         const p = msg.payload || {};
         const board = LEADERBOARDS[p.difficulty] || LEADERBOARDS.normal;
-        ensureGC(true).then((ok) => { if (ok) GameServices.showLeaderboard(board).catch(() => {}); });
+        ensureGC(true).then((ok) => {
+          if (ok) GameServices.showLeaderboard(board).catch((e) => notifyPage((e && e.message) || 'Leaderboard unavailable'));
+        });
         break;
       }
       case 'share': {
@@ -276,7 +292,7 @@ export default function App() {
       default:
         break;
     }
-  }, [ensureGC]);
+  }, [ensureGC, notifyPage]);
 
   const onLoadEnd = useCallback(() => {
     // The page bakes its art before it is usable, so hold the splash until the
