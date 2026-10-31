@@ -179,12 +179,14 @@ export default function App() {
     if (gcReady.current) return true;
     if (gcTried.current && !explicit) return false;
     gcTried.current = true;
+    if (explicit) notifyPage('1/3 sign-in check');
     try {
       if (!gcInit.current) { GameServices.initialize(); gcInit.current = true; }
       // an account Game Center already knows needs no sign-in round trip
       if (await GameServices.isAuthenticated()) { gcReady.current = true; return true; }
       // signIn() only settles once the sign-in sheet is done; a player who
       // closes it leaves the promise hanging, so never wait on it forever
+      if (explicit) notifyPage('2/3 waiting for sign-in sheet');
       await Promise.race([
         GameServices.signIn(),
         new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000)),
@@ -273,7 +275,11 @@ export default function App() {
         const p = msg.payload || {};
         const board = LEADERBOARDS[p.difficulty] || LEADERBOARDS.normal;
         ensureGC(true).then((ok) => {
-          if (ok) GameServices.showLeaderboard(board).catch((e) => notifyPage((e && e.message) || 'Leaderboard unavailable'));
+          if (!ok) return;
+          notifyPage('3/3 opening ' + board);
+          GameServices.showLeaderboard(board)
+            .then(() => notifyPage('opened (if nothing shows, the app has no view to present it on)'))
+            .catch((e) => notifyPage((e && e.message) || 'Leaderboard unavailable'));
         });
         break;
       }
