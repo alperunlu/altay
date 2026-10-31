@@ -48,9 +48,10 @@ jobs:
             exit 1
           fi
 
-      # runtimeVersion is the app.json "version". If this push also changed
-      # something native, an OTA to the build already on phones could crash it:
-      # stop and ask for a new build (and a version bump) instead.
+      # runtimeVersion is pinned in app.json (currently "1.0.1", shared by the 1.0.1
+      # and 1.0.2 builds, whose native code is identical). If a push changes
+      # something native, an OTA to the builds already on phones could crash
+      # them: stop and ask for a new build (and a new runtimeVersion) instead.
       - name: Guard against native changes
         id: guard
         working-directory: .

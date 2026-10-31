@@ -2,7 +2,7 @@
   "expo": {
     "name": "Altay",
     "slug": "altay",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "altay",
@@ -53,9 +53,7 @@
       "checkAutomatically": "ON_LOAD",
       "url": "https://u.expo.dev/fd9d7be3-7502-469d-a7bc-8db6430b3b42"
     },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
+    "runtimeVersion": "1.0.1",
     "extra": {
       "eas": {
         "projectId": "fd9d7be3-7502-469d-a7bc-8db6430b3b42"
