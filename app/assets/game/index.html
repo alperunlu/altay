@@ -63,7 +63,7 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
   /* The lobby card doubles as the room screen once a game is being set up.
      "How to play" and the upgrade tree are main-menu doors, not part of
      hosting or joining, so they are hidden while the card is in that role. */
-  #lobby.netMode #btnHelp,#lobby.netMode #btnMeta,#lobby.netMode #lobbyLang{display:none}
+  #lobby.netMode #btnHelp,#lobby.netMode #btnMeta,#lobby.netMode #btnOpts,#lobby.netMode #lobbyLang{display:none}
   .card{width:min(440px,92vw);padding:26px 24px 22px;border-radius:14px;
     background:linear-gradient(180deg,rgba(38,32,26,.97),rgba(12,12,16,.98));
     border:1px solid rgba(214,172,92,.55);
@@ -207,6 +207,7 @@ src:url(data:font/woff2;base64,d09GMgABAAAAADjMABQAAAAAe4gAADhdAAEAAAAAAAAAAAAAA
     <div id="lobbyMsg"></div>
     <button data-i18n="how_to_play" class="ghost" id="btnHelp">Nasıl oynanır?</button>
     <div class="btnPair">
+      <button data-i18n="settings" class="ghost" id="btnOpts">Ayarlar</button>
       <button data-i18n="permanent_upgrades" class="ghost" id="btnMeta">Kalıcı Yükseltmeler</button>
       <button data-i18n="leaderboard_title" class="ghost" id="btnBoard" style="display:none">Sıralama</button>
     </div>
@@ -10004,7 +10005,7 @@ function autoPauseOnLeave() {
 document.addEventListener('visibilitychange', () => { if (document.hidden) autoPauseOnLeave(); });
 window.addEventListener('pagehide', autoPauseOnLeave);
 window.addEventListener('altay:background', autoPauseOnLeave);   // sent by the app shell on AppState 'inactive'/'background'
-function openMenu() { $('menu').classList.remove('settings'); $('menu').classList.remove('hidden'); resetLangPickers(); syncMenu(); }
+function openMenu() { fromLobby = false; $('menu').classList.remove('settings'); $('menu').classList.remove('hidden'); resetLangPickers(); syncMenu(); }
 function closeMenu() { $('menu').classList.add('hidden'); resetLangPickers(); }
 /* Language picker: "<  English  >". The arrows only choose; nothing changes
    until Apply, because applying reloads the page (names are baked at load)
@@ -10041,6 +10042,7 @@ function mountLangPicker(el, inRun) {
   return st;
 }
 function resetLangPickers() { langPickers.forEach(p => p.refresh()); }
+let fromLobby = false;
 function syncMenu() {
   $('mMusic').textContent = i18n('music_state', { state: Audio2.musicOn ? i18n('on') : i18n('off') });
   $('mSfx').textContent = i18n('sounds_state', { state: Audio2.enabled ? i18n('on') : i18n('off') });
@@ -10051,7 +10053,7 @@ function syncMenu() {
   // online, the run is not one player's to reset or reconfigure -- the way
   // out is leaving the room (which concedes a duel)
   $('mSetup').textContent = NET.active ? (G.duel ? i18n('leave_room_forfeit') : i18n('leave_room_2')) : i18n('back_to_main_menu');
-  for (const id of ['mRestart', 'mAuto', 'mEnd']) $(id).style.display = G.duel ? 'none' : '';
+  for (const id of ['mRestart', 'mAuto', 'mEnd']) $(id).style.display = (G.duel || fromLobby) ? 'none' : '';
 }
 function randomCode() { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += c[(Math.random() * c.length) | 0]; return s; }
 function renderMetaTree() {
@@ -10251,7 +10253,13 @@ function wireShell() {
   $('mRestart').onclick = () => { issue({ k: 'restart' }); closeMenu(); };
   $('mSetup').onclick = () => NET.active ? leaveRoom() : leaveRun('lobby');
   $('mSettings').onclick = () => { $('menu').classList.add('settings'); syncMenu(); };
-  $('mSettingsBack').onclick = () => { resetLangPickers(); $('menu').classList.remove('settings'); syncMenu(); };
+  $('mSettingsBack').onclick = () => {
+    resetLangPickers(); $('menu').classList.remove('settings');
+    if (fromLobby) { fromLobby = false; $('menu').classList.add('hidden'); refreshLobbyProgress(); }
+    syncMenu();
+  };
+  // the same settings card, opened over the main menu (no run in progress)
+  $('btnOpts').onclick = () => { fromLobby = true; $('menu').classList.add('settings'); $('menu').classList.remove('hidden'); syncMenu(); };
   mountLangPicker($('setLang'), true);
   $('mHelp').onclick = () => GUIDE.open(0);
   $('mMeta').onclick = () => { renderMetaTree(); $('meta').classList.remove('hidden'); };
